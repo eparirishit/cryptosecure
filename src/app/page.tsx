@@ -245,6 +245,7 @@ export default function Home() {
                       Audit My Code Now
                     </Button>
                   </Link>
+                </div>
               </div>
 
               <div className="relative lg:translate-x-10 animate-in fade-in zoom-in duration-1000 delay-200 perspective-1000">
