@@ -1,0 +1,50 @@
+;; Simple TON wallet with reentrancy vulnerability
+
+#include "stdlib.fc";
+
+global int balance;
+global slice owner;
+
+() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {
+    slice cs = in_msg_full.begin_parse();
+    int flags = cs~load_uint(4);
+    slice sender = cs~load_msg_addr();
+    
+    int op = in_msg_body~load_uint(32);
+    
+    if (op == 1) { ;; deposit
+        balance += msg_value;
+    }
+    
+    if (op == 2) { ;; withdraw
+        int amount = in_msg_body~load_coins();
+        
+        ;; VULNERABILITY: External call before state update
+        send_raw_message(begin_cell()
+            .store_uint(0x18, 6)
+            .store_slice(sender)
+            .store_coins(amount)
+            .store_uint(0, 107)
+        .end_cell(), 1);
+        
+        ;; State update AFTER external call - VULNERABLE!
+        balance -= amount;
+    }
+}
+
+() recv_external(slice in_msg) impure {
+    ;; VULNERABILITY: No access control!
+    accept_message();
+    
+    slice cs = in_msg;
+    int op = cs~load_uint(32);
+    
+    if (op == 3) { ;; admin function without checks
+        int new_balance = cs~load_coins();
+        balance = new_balance;
+    }
+}
+
+int get_balance() method_id {
+    return balance;
+}

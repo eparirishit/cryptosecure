@@ -1,0 +1,77 @@
+;; Secure TON wallet with proper security measures
+
+#include "stdlib.fc";
+
+global int balance;
+global int owner_pubkey;
+
+() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {
+    slice cs = in_msg_full.begin_parse();
+    int flags = cs~load_uint(4);
+    
+    ;; Check for bounced messages
+    if (flags & 1) {
+        on_bounce(in_msg_body);
+        return ();
+    }
+    
+    slice sender = cs~load_msg_addr();
+    int op = in_msg_body~load_uint(32);
+    
+    if (op == 1) { ;; deposit
+        ;; Validate amount
+        throw_unless(400, msg_value > 0);
+        balance += msg_value;
+    }
+    
+    if (op == 2) { ;; withdraw
+        int amount = in_msg_body~load_coins();
+        
+        ;; CHECKS: Validate request
+        throw_unless(401, amount > 0);
+        throw_unless(402, amount <= balance);
+        
+        ;; EFFECTS: Update state FIRST
+        balance -= amount;
+        
+        ;; INTERACTIONS: External call LAST
+        send_raw_message(begin_cell()
+            .store_uint(0x18, 6)
+            .store_slice(sender)
+            .store_coins(amount)
+            .store_uint(0, 107)
+        .end_cell(), 1);
+    }
+}
+
+() on_bounce(slice in_msg_body) impure {
+    ;; Handle bounced messages
+    int op = in_msg_body~load_uint(32);
+    if (op == 2) { ;; withdraw bounced
+        int amount = in_msg_body~load_coins();
+        balance += amount; ;; Restore balance
+    }
+}
+
+() recv_external(slice in_msg) impure {
+    ;; Proper signature verification
+    slice signature = in_msg~load_bits(512);
+    slice cs = in_msg;
+    int msg_hash = slice_hash(cs);
+    
+    ;; Verify signature matches owner
+    throw_unless(403, check_signature(msg_hash, signature, owner_pubkey));
+    
+    ;; Now safe to accept
+    accept_message();
+    
+    int op = cs~load_uint(32);
+    if (op == 3) { ;; admin function
+        int new_owner_pubkey = cs~load_uint(256);
+        owner_pubkey = new_owner_pubkey;
+    }
+}
+
+int get_balance() method_id {
+    return balance;
+}
