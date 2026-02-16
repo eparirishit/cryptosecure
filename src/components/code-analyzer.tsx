@@ -32,8 +32,10 @@ import {
   FileCheck,
   Download,
 } from "lucide-react";
-import { AnalysisResult, Finding, HackerModeResult } from "@/types/analysis";
+import { AnalysisResult, Finding } from "@/types/analysis";
+import { CodeDiffViewer } from "@/components/code-diff-viewer";
 import { pdf } from "@react-pdf/renderer";
+import { PdfReport } from "@/components/pdf-report";
 import { SimpleTooltip } from "@/components/ui/simple-tooltip";
 import { detectLanguage } from "@/lib/analyzer/prompts";
 
@@ -475,11 +477,7 @@ export function CodeAnalyzer() {
     null,
   );
   const [isHacking, setIsHacking] = useState(false);
-  const [hackerResult, setHackerResult] = useState<HackerModeResult | null>(
-    null,
-  );
-  const [hackerStep, setHackerStep] = useState(0);
-  const [isGeneratingHackerPdf, setIsGeneratingHackerPdf] = useState(false);
+
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const progressCancelledRef = useRef(false);
@@ -652,7 +650,6 @@ export function CodeAnalyzer() {
 
     setIsAnalyzing(true);
     setResult(null);
-    setHackerResult(null); // Clear previous hacker results to ensure fresh state
     setError(null);
     setShowDiff(false);
     setIsEditingFix(false);
@@ -940,80 +937,25 @@ export function CodeAnalyzer() {
     setResult(null);
   };
 
-  const hackerProgressSteps = [
-    { title: "Enumerating attack surfaces...", duration: 1500 },
-    { title: "Generating exploit strategies...", duration: 2000 },
-    { title: "Validating attack feasibility...", duration: 1500 },
-    { title: "Preparing defensive recommendations...", duration: 1000 },
-  ];
-
-  const handleHackerMode = async () => {
-    const currentCode = getCurrentCode();
-    if (!currentCode.trim()) {
-      return;
-    }
-
-    setIsHacking(true);
-    setHackerResult(null);
-    setResult(null); // Clear previous standard results to ensure fresh state
-    setHackerStep(0);
-    setShowDiff(false);
-    setIsEditingFix(false);
+  const handleDownloadReport = async () => {
+    if (!result) return;
+    setIsGeneratingPdf(true);
 
     try {
-      const language =
-        activeTab === "snippet" && snippetLanguage
-          ? snippetLanguage
-          : uploadedFile?.name.split(".").pop()?.toLowerCase() || "func";
-
-      // Progress simulation
-      const progressPromise = (async () => {
-        for (let i = 0; i < hackerProgressSteps.length; i++) {
-          setHackerStep(i);
-          await new Promise((resolve) =>
-            setTimeout(resolve, hackerProgressSteps[i].duration),
-          );
-        }
-        setHackerStep(hackerProgressSteps.length - 1);
-      })();
-
-      const response = await fetch("/api/hack", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          code: currentCode,
-          language: language,
-          originalVulnerabilities: result?.findings || [],
-        }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        const errorMsg =
-          data.details || data.error || "Hacker Mode analysis failed";
-        // Provide more helpful error message for missing API key
-        if (
-          errorMsg.includes("AI service not configured") ||
-          errorMsg.includes("OPENAI_API_KEY")
-        ) {
-          throw new Error(
-            "OpenAI API key not configured. Please set OPENAI_API_KEY in your .env.local file. See .env.example for reference.",
-          );
-        }
-        throw new Error(errorMsg);
-      }
-
-      // Wait for progress to complete
-      await progressPromise;
-      await new Promise((resolve) => setTimeout(resolve, 500));
-
-      setHackerResult(data);
-    } catch (err: any) {
-      setError(err.message || "Hacker Mode analysis failed");
+      const blob = await pdf(<PdfReport result={result} />).toBlob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `security-report-${new Date().toISOString().split("T")[0]}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("Failed to generate PDF:", err);
+      setError("Failed to generate PDF report. Please try again.");
     } finally {
-      setIsHacking(false);
-      setHackerStep(0);
+      setIsGeneratingPdf(false);
     }
   };
 
@@ -1028,333 +970,496 @@ export function CodeAnalyzer() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
-          <>
-            {/* Tabs */}
-            <div className="flex gap-1 border-b border-neutral-200">
-              <button
-                onClick={() => handleTabSwitch("upload")}
-                className={`px-6 py-3 font-medium text-sm transition-all border-b-2 flex items-center gap-2 ${
-                  activeTab === "upload"
-                    ? "border-blue-600 text-blue-600 bg-blue-50"
-                    : "border-transparent text-neutral-600 hover:text-neutral-900 hover:bg-neutral-50"
-                }`}
-              >
-                <Upload className="h-4 w-4" />
-                Upload
-              </button>
-              <button
-                onClick={() => handleTabSwitch("snippet")}
-                className={`px-6 py-3 font-medium text-sm transition-all border-b-2 flex items-center gap-2 ${
-                  activeTab === "snippet"
-                    ? "border-blue-600 text-blue-600 bg-blue-50"
-                    : "border-transparent text-neutral-600 hover:text-neutral-900 hover:bg-neutral-50"
-                }`}
-              >
-                <FileCode className="h-4 w-4" />
-                Snippet
-              </button>
-            </div>
-
-            {/* Scan in Progress */}
-            {isAnalyzing ? (
-              <div className="border-2 border-dashed border-blue-300 rounded-lg p-8 bg-neutral-50 h-[300px] flex items-center justify-center">
-                <div className="w-full max-w-xl space-y-6">
-                  <div>
-                    <h3 className="text-xl font-semibold text-neutral-900 mb-1">
-                      Scan in progress...
-                    </h3>
-                    <p className="text-sm text-neutral-600">
-                      Analyzing your smart contract for security vulnerabilities
-                    </p>
-                  </div>
-
-                  <div className="space-y-0">
-                    {progressSteps.map((step, index) => {
-                      const isActive = index === currentStep;
-                      const isCompleted = index < currentStep;
-                      const isPending = index > currentStep;
-                      const isLast = index === progressSteps.length - 1;
-
-                      return (
-                        <div key={index} className="flex items-start gap-3">
-                          {/* Progress Indicator */}
-                          <div className="flex flex-col items-center flex-shrink-0">
-                            {isCompleted ? (
-                              <div className="w-5 h-5 rounded-full bg-green-600 flex items-center justify-center shadow-sm">
-                                <CheckCircle className="h-3.5 w-3.5 text-white" />
-                              </div>
-                            ) : isActive ? (
-                              <div className="w-5 h-5 rounded-full bg-blue-600 flex items-center justify-center shadow-sm">
-                                <Loader2 className="h-3.5 w-3.5 text-white animate-spin" />
-                              </div>
-                            ) : (
-                              <div className="w-5 h-5 rounded-full border-2 border-neutral-300 bg-white"></div>
-                            )}
-                            {!isLast && (
-                              <div
-                                className={`w-0.5 h-6 mt-1.5 ${
-                                  isCompleted
-                                    ? "bg-green-600"
-                                    : "bg-neutral-200"
-                                }`}
-                              ></div>
-                            )}
-                          </div>
-
-                          {/* Step Content */}
-                          <div className="flex-1 min-w-0">
-                            <p
-                              className={`text-sm font-medium leading-tight ${
-                                isActive
-                                  ? "text-blue-700"
-                                  : isCompleted
-                                    ? "text-green-700"
-                                    : "text-neutral-400"
-                              }`}
-                            >
-                              {step.title}
-                            </p>
-                            {step.description && isActive && (
-                              <p className="text-xs text-neutral-500 mt-0.5 leading-tight">
-                                {step.description}
-                              </p>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
+          {/* Editor Section - Replaced with Upload/Snippet UI */}
+          {!showDiff ? (
+            <>
+              {/* Tabs */}
+              <div className="flex gap-1 border-b border-neutral-200">
+                <button
+                  onClick={() => handleTabSwitch("upload")}
+                  className={`px-6 py-3 font-medium text-sm transition-all border-b-2 flex items-center gap-2 ${
+                    activeTab === "upload"
+                      ? "border-blue-600 text-blue-600 bg-blue-50"
+                      : "border-transparent text-neutral-600 hover:text-neutral-900 hover:bg-neutral-50"
+                  }`}
+                >
+                  <Upload className="h-4 w-4" />
+                  Upload
+                </button>
+                <button
+                  onClick={() => handleTabSwitch("snippet")}
+                  className={`px-6 py-3 font-medium text-sm transition-all border-b-2 flex items-center gap-2 ${
+                    activeTab === "snippet"
+                      ? "border-blue-600 text-blue-600 bg-blue-50"
+                      : "border-transparent text-neutral-600 hover:text-neutral-900 hover:bg-neutral-50"
+                  }`}
+                >
+                  <FileCode className="h-4 w-4" />
+                  Snippet
+                </button>
               </div>
-            ) : (
-              <>
-                {/* Upload Tab */}
-                {activeTab === "upload" && (
-                  <div
-                    onDragOver={handleDragOver}
-                    onDragLeave={handleDragLeave}
-                    onDrop={handleDrop}
-                    className={`relative border-2 border-dashed rounded-lg p-8 transition-colors h-[300px] flex items-center justify-center ${
-                      isDragging
-                        ? "border-blue-500 bg-blue-50"
-                        : "border-blue-300 bg-neutral-50"
-                    }`}
-                  >
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      accept=".tact,.fc,.func"
-                      onChange={handleFileInputChange}
-                      className="hidden"
-                    />
 
-                    {uploadedFile ? (
-                      <div className="w-full h-full flex flex-col items-center justify-center p-4">
-                        <div className="w-full max-w-md bg-white rounded-lg border border-neutral-200 shadow-sm overflow-hidden">
-                          <div className="flex items-start gap-3 px-4 py-3">
-                            <div className="p-1.5 bg-blue-100 rounded flex-shrink-0">
-                              <FileText className="h-4 w-4 text-blue-600" />
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2 mb-1">
-                                <p className="font-semibold text-neutral-900 truncate text-sm">
-                                  {uploadedFile.name}
-                                </p>
-                                <span className="px-1.5 py-0.5 bg-blue-100 text-blue-700 text-xs font-medium rounded whitespace-nowrap">
-                                  Contract
-                                </span>
-                                <CheckCircle className="h-3.5 w-3.5 text-green-600 flex-shrink-0" />
-                              </div>
-                              <p className="text-xs text-neutral-500 mb-1">
-                                {(uploadedFile.size / 1024).toFixed(2)} KB
-                              </p>
-                              <p className="text-xs text-green-700 font-medium">
-                                Valid{" "}
-                                {uploadedFile.name
-                                  .split(".")
-                                  .pop()
-                                  ?.toUpperCase()}{" "}
-                                file
-                              </p>
-                            </div>
-                            <button
-                              onClick={handleRemoveFile}
-                              className="p-1 hover:bg-neutral-100 rounded transition-colors flex-shrink-0"
-                              title="Remove file"
-                            >
-                              <X className="h-4 w-4 text-neutral-500" />
-                            </button>
-                          </div>
-                          <div className="h-1 bg-green-200">
-                            <div className="h-full bg-green-600 w-full"></div>
-                          </div>
-                        </div>
-                        <p className="text-sm text-neutral-600 mt-3">
-                          File loaded successfully. Click "Analyze Security" to
-                          start the analysis.
-                        </p>
-                      </div>
-                    ) : (
-                      <div className="text-center space-y-4 w-full">
-                        <div className="flex justify-center">
-                          <div className="p-4 bg-blue-100 rounded-full">
-                            <Upload className="h-8 w-8 text-blue-600" />
-                          </div>
-                        </div>
-                        <div>
-                          <p className="text-lg font-medium text-neutral-900 mb-2">
-                            Drop files here
-                          </p>
-                          <p className="text-sm text-neutral-600 mb-4">
-                            Attach contract files (.tact, .fc, .func) up to 1MB
-                          </p>
-                          <button
-                            onClick={() => fileInputRef.current?.click()}
-                            className="text-blue-600 hover:text-blue-700 underline font-medium text-sm cursor-pointer transition-colors"
-                          >
-                            Click to upload
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Error: Upload tab errors */}
-                {error && activeTab === "upload" && !isAnalyzing && (
-                  <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
-                    <p className="text-sm text-red-700 font-medium">{error}</p>
-                  </div>
-                )}
-
-                {/* Snippet Tab */}
-                {activeTab === "snippet" && !isAnalyzing && (
-                  <div className="space-y-3">
-                    <div className="flex items-center gap-2">
-                      <label className="text-sm font-medium text-neutral-700">
-                        Language:
-                      </label>
-                      <div className="flex gap-2">
-                        {ALLOWED_LANGUAGES.map((lang) => (
-                          <button
-                            key={lang}
-                            onClick={() => {
-                              if (snippetLanguage !== lang) {
-                                setSnippetCode("");
-                                setCodeValidationError(null);
-                                setError(null);
-                              }
-                              setSnippetLanguage(lang);
-                            }}
-                            className={`px-3 py-1.5 text-sm font-medium rounded transition-colors ${
-                              snippetLanguage === lang
-                                ? "bg-blue-600 text-white"
-                                : "bg-neutral-100 text-neutral-700 hover:bg-neutral-200"
-                            }`}
-                          >
-                            {lang.toUpperCase()}
-                          </button>
-                        ))}
-                      </div>
+              {/* Scan in Progress */}
+              {isAnalyzing ? (
+                <div className="border-2 border-dashed border-blue-300 rounded-lg p-8 bg-neutral-50 h-[300px] flex items-center justify-center">
+                  <div className="w-full max-w-xl space-y-6">
+                    <div>
+                      <h3 className="text-xl font-semibold text-neutral-900 mb-1">
+                        Scan in progress...
+                      </h3>
+                      <p className="text-sm text-neutral-600">
+                        Analyzing your smart contract for security
+                        vulnerabilities
+                      </p>
                     </div>
 
-                    <Textarea
-                      placeholder="// Paste your smart contract code here..."
-                      className="h-[300px] font-mono text-sm resize-none overflow-y-auto focus-visible:border-blue-500 focus-visible:ring-blue-500/20 focus-visible:ring-[2px]"
-                      value={snippetCode}
-                      onChange={(e) => {
-                        const newCode = e.target.value;
-                        setSnippetCode(newCode);
-                        const code = newCode.trim();
+                    <div className="space-y-0">
+                      {progressSteps.map((step, index) => {
+                        const isActive = index === currentStep;
+                        const isCompleted = index < currentStep;
+                        const isPending = index > currentStep;
+                        const isLast = index === progressSteps.length - 1;
 
-                        if (code) {
-                          // Auto-detect language when code is provided
-                          const {
-                            language: detectedLang,
-                            error: detectionError,
-                          } = autoDetectLanguage(code);
+                        return (
+                          <div key={index} className="flex items-start gap-3">
+                            {/* Progress Indicator */}
+                            <div className="flex flex-col items-center flex-shrink-0">
+                              {isCompleted ? (
+                                <div className="w-5 h-5 rounded-full bg-green-600 flex items-center justify-center shadow-sm">
+                                  <CheckCircle className="h-3.5 w-3.5 text-white" />
+                                </div>
+                              ) : isActive ? (
+                                <div className="w-5 h-5 rounded-full bg-blue-600 flex items-center justify-center shadow-sm">
+                                  <Loader2 className="h-3.5 w-3.5 text-white animate-spin" />
+                                </div>
+                              ) : (
+                                <div className="w-5 h-5 rounded-full border-2 border-neutral-300 bg-white"></div>
+                              )}
+                              {!isLast && (
+                                <div
+                                  className={`w-0.5 h-6 mt-1.5 ${
+                                    isCompleted
+                                      ? "bg-green-600"
+                                      : "bg-neutral-200"
+                                  }`}
+                                ></div>
+                              )}
+                            </div>
 
-                          if (detectedLang) {
-                            // Auto-select the detected language
-                            setSnippetLanguage(detectedLang);
-                            // Use detected language for validation
-                            const validation = validateCodeLanguage(
-                              code,
-                              detectedLang,
-                            );
-                            if (!validation.valid) {
-                              const errorMsg =
-                                validation.message ||
-                                "Code language doesn't match detected language.";
-                              setCodeValidationError(errorMsg);
-                              setError(errorMsg);
-                            } else {
-                              setCodeValidationError(null);
-                              setError(null);
-                            }
-                          } else if (detectionError) {
-                            // Show validation error if language is not supported
-                            setCodeValidationError(detectionError);
-                            setError(detectionError);
-                          } else {
-                            // No detection result, validate against manually selected language if any
-                            if (
-                              snippetLanguage &&
-                              isValidLanguage(snippetLanguage)
-                            ) {
+                            {/* Step Content */}
+                            <div className="flex-1 min-w-0">
+                              <p
+                                className={`text-sm font-medium leading-tight ${
+                                  isActive
+                                    ? "text-blue-700"
+                                    : isCompleted
+                                      ? "text-green-700"
+                                      : "text-neutral-400"
+                                }`}
+                              >
+                                {step.title}
+                              </p>
+                              {step.description && isActive && (
+                                <p className="text-xs text-neutral-500 mt-0.5 leading-tight">
+                                  {step.description}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {/* Upload Tab */}
+                  {activeTab === "upload" && (
+                    <div
+                      onDragOver={handleDragOver}
+                      onDragLeave={handleDragLeave}
+                      onDrop={handleDrop}
+                      className={`relative border-2 border-dashed rounded-lg p-8 transition-colors h-[300px] flex items-center justify-center ${
+                        isDragging
+                          ? "border-blue-500 bg-blue-50"
+                          : "border-blue-300 bg-neutral-50"
+                      }`}
+                    >
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept=".tact,.fc,.func"
+                        onChange={handleFileInputChange}
+                        className="hidden"
+                      />
+
+                      {uploadedFile ? (
+                        <div className="w-full h-full flex flex-col items-center justify-center p-4">
+                          <div className="w-full max-w-md bg-white rounded-lg border border-neutral-200 shadow-sm overflow-hidden">
+                            <div className="flex items-start gap-3 px-4 py-3">
+                              <div className="p-1.5 bg-blue-100 rounded flex-shrink-0">
+                                <FileText className="h-4 w-4 text-blue-600" />
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 mb-1">
+                                  <p className="font-semibold text-neutral-900 truncate text-sm">
+                                    {uploadedFile.name}
+                                  </p>
+                                  <span className="px-1.5 py-0.5 bg-blue-100 text-blue-700 text-xs font-medium rounded whitespace-nowrap">
+                                    Contract
+                                  </span>
+                                  <CheckCircle className="h-3.5 w-3.5 text-green-600 flex-shrink-0" />
+                                </div>
+                                <p className="text-xs text-neutral-500 mb-1">
+                                  {(uploadedFile.size / 1024).toFixed(2)} KB
+                                </p>
+                                <p className="text-xs text-green-700 font-medium">
+                                  Valid{" "}
+                                  {uploadedFile.name
+                                    .split(".")
+                                    .pop()
+                                    ?.toUpperCase()}{" "}
+                                  file
+                                </p>
+                              </div>
+                              <button
+                                onClick={handleRemoveFile}
+                                className="p-1 hover:bg-neutral-100 rounded transition-colors flex-shrink-0"
+                                title="Remove file"
+                              >
+                                <X className="h-4 w-4 text-neutral-500" />
+                              </button>
+                            </div>
+                            <div className="h-1 bg-green-200">
+                              <div className="h-full bg-green-600 w-full"></div>
+                            </div>
+                          </div>
+                          <p className="text-sm text-neutral-600 mt-3">
+                            File loaded successfully. Click "Analyze Security"
+                            to start the analysis.
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="text-center space-y-4 w-full">
+                          <div className="flex justify-center">
+                            <div className="p-4 bg-blue-100 rounded-full">
+                              <Upload className="h-8 w-8 text-blue-600" />
+                            </div>
+                          </div>
+                          <div>
+                            <p className="text-lg font-medium text-neutral-900 mb-2">
+                              Drop files here
+                            </p>
+                            <p className="text-sm text-neutral-600 mb-4">
+                              Attach contract files (.tact, .fc, .func) up to
+                              1MB
+                            </p>
+                            <button
+                              onClick={() => fileInputRef.current?.click()}
+                              className="text-blue-600 hover:text-blue-700 underline font-medium text-sm cursor-pointer transition-colors"
+                            >
+                              Click to upload
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Error: Upload tab errors */}
+                  {error && activeTab === "upload" && !isAnalyzing && (
+                    <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
+                      <p className="text-sm text-red-700 font-medium">
+                        {error}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Snippet Tab */}
+                  {activeTab === "snippet" && !isAnalyzing && (
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-2">
+                        <label className="text-sm font-medium text-neutral-700">
+                          Language:
+                        </label>
+                        <div className="flex gap-2">
+                          {ALLOWED_LANGUAGES.map((lang) => (
+                            <button
+                              key={lang}
+                              onClick={() => {
+                                if (snippetLanguage !== lang) {
+                                  setSnippetCode("");
+                                  setCodeValidationError(null);
+                                  setError(null);
+                                }
+                                setSnippetLanguage(lang);
+                              }}
+                              className={`px-3 py-1.5 text-sm font-medium rounded transition-colors ${
+                                snippetLanguage === lang
+                                  ? "bg-blue-600 text-white"
+                                  : "bg-neutral-100 text-neutral-700 hover:bg-neutral-200"
+                              }`}
+                            >
+                              {lang.toUpperCase()}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <Textarea
+                        placeholder="// Paste your smart contract code here..."
+                        className="h-[300px] font-mono text-sm resize-none overflow-y-auto focus-visible:border-blue-500 focus-visible:ring-blue-500/20 focus-visible:ring-[2px]"
+                        value={snippetCode}
+                        onChange={(e) => {
+                          const newCode = e.target.value;
+                          setSnippetCode(newCode);
+                          const code = newCode.trim();
+
+                          if (code) {
+                            // Auto-detect language when code is provided
+                            const {
+                              language: detectedLang,
+                              error: detectionError,
+                            } = autoDetectLanguage(code);
+
+                            if (detectedLang) {
+                              // Auto-select the detected language
+                              setSnippetLanguage(detectedLang);
+                              // Use detected language for validation
                               const validation = validateCodeLanguage(
                                 code,
-                                snippetLanguage,
+                                detectedLang,
                               );
                               if (!validation.valid) {
                                 const errorMsg =
                                   validation.message ||
-                                  "Code language doesn't match selected language.";
+                                  "Code language doesn't match detected language.";
                                 setCodeValidationError(errorMsg);
                                 setError(errorMsg);
                               } else {
                                 setCodeValidationError(null);
                                 setError(null);
                               }
+                            } else if (detectionError) {
+                              // Show validation error if language is not supported
+                              setCodeValidationError(detectionError);
+                              setError(detectionError);
                             } else {
-                              setCodeValidationError(null);
-                              setError(null);
+                              // No detection result, validate against manually selected language if any
+                              if (
+                                snippetLanguage &&
+                                isValidLanguage(snippetLanguage)
+                              ) {
+                                const validation = validateCodeLanguage(
+                                  code,
+                                  snippetLanguage,
+                                );
+                                if (!validation.valid) {
+                                  const errorMsg =
+                                    validation.message ||
+                                    "Code language doesn't match selected language.";
+                                  setCodeValidationError(errorMsg);
+                                  setError(errorMsg);
+                                } else {
+                                  setCodeValidationError(null);
+                                  setError(null);
+                                }
+                              } else {
+                                setCodeValidationError(null);
+                                setError(null);
+                              }
                             }
+                          } else {
+                            // Code is empty, clear errors
+                            setCodeValidationError(null);
+                            setError(null);
                           }
-                        } else {
-                          // Code is empty, clear errors
-                          setCodeValidationError(null);
-                          setError(null);
-                        }
-                      }}
-                    />
+                        }}
+                      />
 
-                    {snippetCode.trim() &&
-                      (!snippetLanguage || !isValidLanguage(snippetLanguage)) &&
-                      !error && (
-                        <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg">
-                          <p className="text-sm text-amber-700 font-medium">
-                            Please select a language type (Tact, FC, or Func) to
-                            proceed with analysis.
+                      {snippetCode.trim() &&
+                        (!snippetLanguage ||
+                          !isValidLanguage(snippetLanguage)) &&
+                        !error && (
+                          <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                            <p className="text-sm text-amber-700 font-medium">
+                              Please select a language type (Tact, FC, or Func)
+                              to proceed with analysis.
+                            </p>
+                          </div>
+                        )}
+
+                      {error && activeTab === "snippet" && !isAnalyzing && (
+                        <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
+                          <p className="text-sm text-red-700 font-medium">
+                            {error}
                           </p>
                         </div>
                       )}
-
-                    {error && activeTab === "snippet" && !isAnalyzing && (
-                      <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
-                        <p className="text-sm text-red-700 font-medium">
-                          {error}
-                        </p>
-                      </div>
-                    )}
+                    </div>
+                  )}
+                </>
+              )}
+            </>
+          ) : (
+            <div className="animate-in fade-in slide-in-from-bottom-4">
+              {isEditingFix ? (
+                <div className="space-y-4">
+                  <div className="p-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg text-sm text-blue-700 dark:text-blue-300 flex items-center gap-2">
+                    <Info className="h-4 w-4" />
+                    You are editing the proposed fix. The diff view on the left
+                    updates in real-time as you type.
                   </div>
-                )}
-              </>
-            )}
-          </>
+
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 h-[600px]">
+                    <div className="space-y-2 overflow-hidden h-full flex flex-col">
+                      <span className="text-xs font-bold uppercase text-neutral-500 tracking-wider">
+                        Live Diff Preview
+                      </span>
+                      <div className="flex-1 overflow-hidden">
+                        <CodeDiffViewer
+                          ref={diffViewerRef}
+                          originalCode={getCurrentCode()}
+                          patchedCode={modifiedFix}
+                          onScroll={handleDiffScroll}
+                          viewMode={diffViewMode}
+                          onViewModeChange={setDiffViewMode}
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-2 h-full flex flex-col">
+                      <span className="text-xs font-bold uppercase text-blue-600 tracking-wider">
+                        Proposed Code (Editable)
+                      </span>
+                      <div className="rounded-md border bg-neutral-950 font-mono text-sm overflow-hidden shadow-2xl h-full flex flex-col">
+                        <div className="flex-shrink-0 flex items-center justify-between px-4 py-2 bg-neutral-900 border-b border-neutral-800">
+                          <span className="text-xs font-bold text-neutral-400 tracking-wider">
+                            EDITOR
+                          </span>
+                          <div className="text-xs text-neutral-500">
+                            Editable
+                          </div>
+                        </div>
+                        <textarea
+                          ref={editorRef}
+                          className="flex-1 w-full bg-transparent text-neutral-300 p-4 resize-none focus:outline-none font-mono text-sm leading-relaxed"
+                          value={modifiedFix}
+                          onChange={(e) => setModifiedFix(e.target.value)}
+                          onScroll={handleEditorScroll}
+                          spellCheck={false}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end gap-3 pt-4">
+                    <Button
+                      variant="outline"
+                      onClick={() => setIsEditingFix(false)}
+                    >
+                      Cancel Edit
+                    </Button>
+                    <Button
+                      onClick={() => setIsEditingFix(false)}
+                      className="bg-blue-600 hover:bg-blue-700 text-white"
+                    >
+                      Preview Final Diff
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <CodeDiffViewer
+                    originalCode={getCurrentCode()}
+                    patchedCode={modifiedFix}
+                    viewMode={diffViewMode}
+                    onViewModeChange={setDiffViewMode}
+                  />
+                  <div className="flex justify-between items-center mt-4">
+                    <Button
+                      variant="outline"
+                      onClick={() => setIsEditingFix(true)}
+                      className="border-neutral-300"
+                    >
+                      <Pencil className="mr-2 h-4 w-4" /> Edit Proposed Code
+                    </Button>
+                    <div className="flex gap-3">
+                      <Button
+                        onClick={() => setShowDiff(false)}
+                        className="bg-red-500 hover:bg-red-600 text-white"
+                      >
+                        Deny / Cancel
+                      </Button>
+                      <Button
+                        onClick={handleAcceptFix}
+                        className="bg-green-600 hover:bg-green-700 text-white"
+                      >
+                        <CheckCircle className="mr-2 h-4 w-4" /> Accept Fixes
+                      </Button>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
 
           {!showDiff && (
             <div className="flex justify-end gap-3 flex-wrap">
+              {result && (
+                <Button
+                  variant="outline"
+                  onClick={handleDownloadReport}
+                  disabled={isGeneratingPdf}
+                  size="lg"
+                  className="border-blue-300 text-blue-700 hover:bg-blue-50"
+                >
+                  {isGeneratingPdf ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <Download className="mr-2 h-4 w-4" />
+                  )}
+                  Download Report
+                </Button>
+              )}
+              {result && result.findings.some((f) => f.codeChanges) && (
+                <Button
+                  variant="outline"
+                  onClick={handleReviewClick}
+                  size="lg"
+                  className="border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 hover:text-blue-800"
+                >
+                  <Wand2 className="mr-2 h-4 w-4" />
+                  Review Code Fixes
+                </Button>
+              )}
+              <SimpleTooltip
+                content={
+                  <div className="space-y-2">
+                    <p className="font-semibold border-b border-white/20 pb-1 mb-1 flex items-center gap-2">
+                      <ShieldAlert className="h-4 w-4 text-purple-400" />
+                      Premium Audit
+                    </p>
+                    <p>
+                      Simulate advanced adversarial attacks and uncover deep
+                      logic flaws.
+                    </p>
+                    <div>
+                      <span className="text-purple-300 font-medium">
+                        When to use:
+                      </span>
+                      <br />
+                      For comprehensive security assurance before release.
+                    </div>
+                    <div>
+                      <span className="text-purple-300 font-medium">
+                        Best suited for:
+                      </span>
+                      <br />
+                      Complex contracts and high-value targets.
+                    </div>
+                  </div>
+                }
+              ></SimpleTooltip>
               <SimpleTooltip
                 content={
                   <div className="space-y-2">
@@ -1641,6 +1746,186 @@ export function CodeAnalyzer() {
                   </>
                 )}
               </div>
+
+              {/* 4. Recommendations */}
+              {result.recommendations && result.recommendations.length > 0 && (
+                <div>
+                  <h3 className="font-bold text-xl mb-4 flex items-center gap-2">
+                    <ShieldAlert className="h-5 w-5" />
+                    Recommendations
+                  </h3>
+                  <div className="space-y-3">
+                    {result.recommendations.map((rec, idx) => (
+                      <div
+                        key={idx}
+                        className={`p-4 rounded-lg border-l-4 ${
+                          rec.priority === "High"
+                            ? "bg-red-50/50 dark:bg-red-900/20 border-red-500"
+                            : rec.priority === "Medium"
+                              ? "bg-yellow-50/50 dark:bg-yellow-900/20 border-yellow-500"
+                              : "bg-blue-50/50 dark:bg-blue-900/20 border-blue-500"
+                        }`}
+                      >
+                        <div className="flex items-start justify-between mb-2">
+                          <h4 className="font-bold text-base">
+                            {rec.title || "Recommendation"}
+                          </h4>
+                          <span
+                            className={`text-xs px-2 py-1 rounded ${
+                              rec.priority === "High"
+                                ? "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
+                                : rec.priority === "Medium"
+                                  ? "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400"
+                                  : "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
+                            }`}
+                          >
+                            {rec.priority} Priority
+                          </span>
+                        </div>
+                        <p className="text-sm opacity-90 mb-2">
+                          {rec.description}
+                        </p>
+                        {rec.rationale && (
+                          <p className="text-xs text-neutral-600 dark:text-neutral-400 italic">
+                            {rec.rationale}
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* 5. Gas Optimizations */}
+              {result.gasOptimizations &&
+                result.gasOptimizations.length > 0 && (
+                  <div>
+                    <h3 className="font-bold text-xl mb-4 flex items-center gap-2">
+                      <Wand2 className="h-5 w-5" />
+                      Gas Optimizations
+                    </h3>
+                    <div className="space-y-3">
+                      {result.gasOptimizations.map((opt, idx) => (
+                        <div
+                          key={idx}
+                          className="p-4 rounded-lg border bg-neutral-50/50 dark:bg-neutral-900/20"
+                        >
+                          <div className="flex items-start justify-between mb-2">
+                            <h4 className="font-bold text-base">
+                              {opt.location}
+                            </h4>
+                            <span className="text-xs px-2 py-1 rounded bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400">
+                              {opt.estimatedGasSavings ??
+                                opt.estimatedSavings ??
+                                "N/A"}
+                            </span>
+                          </div>
+                          <p className="text-sm opacity-90">
+                            {opt.description}
+                          </p>
+                          {opt.currentApproach && opt.optimizedApproach && (
+                            <div className="space-y-2 mt-2">
+                              <div>
+                                <div className="text-xs font-bold uppercase mb-1 text-red-600 opacity-80">
+                                  Current Approach
+                                </div>
+                                <code className="text-sm font-mono block whitespace-pre-wrap bg-neutral-100 dark:bg-neutral-950 p-2 rounded">
+                                  {opt.currentApproach}
+                                </code>
+                              </div>
+                              <div>
+                                <div className="text-xs font-bold uppercase mb-1 text-green-600 opacity-80">
+                                  Optimized Approach
+                                </div>
+                                <code className="text-sm font-mono block whitespace-pre-wrap bg-neutral-100 dark:bg-neutral-950 p-2 rounded">
+                                  {opt.optimizedApproach}
+                                </code>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+              {/* 6. Code Quality Observations */}
+              {result.codeQualityObservations &&
+                result.codeQualityObservations.length > 0 && (
+                  <div>
+                    <h3 className="font-bold text-xl mb-4 flex items-center gap-2">
+                      <Info className="h-5 w-5" />
+                      Code Quality Observations
+                    </h3>
+                    <ul className="space-y-2 list-disc list-inside">
+                      {result.codeQualityObservations.map((obs, idx) => {
+                        const description =
+                          typeof obs === "string" ? obs : obs.description;
+                        return (
+                          <li
+                            key={idx}
+                            className="text-sm text-neutral-600 dark:text-neutral-400"
+                          >
+                            {description}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                )}
+
+              {/* 7. Positive Findings */}
+              {result.positiveFindings &&
+                result.positiveFindings.length > 0 && (
+                  <div>
+                    <h3 className="font-bold text-xl mb-4 flex items-center gap-2">
+                      <CheckCircle className="h-5 w-5 text-green-600" />
+                      Positive Findings
+                    </h3>
+                    <div className="p-4 rounded-lg border border-green-200 bg-green-50/50 dark:bg-green-900/20">
+                      <ul className="space-y-2 list-disc list-inside">
+                        {result.positiveFindings.map((finding, idx) => {
+                          const description =
+                            typeof finding === "string"
+                              ? finding
+                              : finding.description;
+                          const aspect =
+                            typeof finding === "string"
+                              ? undefined
+                              : finding.aspect;
+                          return (
+                            <li
+                              key={idx}
+                              className="text-sm text-green-700 dark:text-green-400"
+                            >
+                              {aspect && (
+                                <span className="font-semibold">
+                                  {aspect}:{" "}
+                                </span>
+                              )}
+                              {description}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
+                  </div>
+                )}
+
+              {/* 8. Next Steps */}
+              {result.nextSteps && (
+                <div>
+                  <h3 className="font-bold text-xl mb-4 flex items-center gap-2">
+                    <ArrowRight className="h-5 w-5" />
+                    Next Steps
+                  </h3>
+                  <div className="p-4 rounded-lg border bg-blue-50/50 dark:bg-blue-900/20">
+                    <p className="text-sm text-neutral-700 dark:text-neutral-300 whitespace-pre-line">
+                      {result.nextSteps}
+                    </p>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </CardContent>
