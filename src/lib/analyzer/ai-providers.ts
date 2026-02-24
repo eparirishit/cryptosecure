@@ -3,6 +3,10 @@ import { GoogleGenAI } from "@google/genai";
 
 export type AIProvider = "claude" | "openai" | "gemini";
 
+const DEFAULT_OPENAI_MODEL = "gpt-4.1-2025-04-14";
+const DEFAULT_GEMINI_MODEL = "gemini-2.5-pro";
+const DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-20250514";
+
 export interface AIProviderConfig {
   provider: AIProvider;
   apiKey: string;
@@ -26,7 +30,7 @@ class OpenAIProvider implements AIProviderInterface {
   private client: OpenAI;
   private model: string;
 
-  constructor(apiKey: string, model: string = "gpt-4.1-2025-04-14") {
+  constructor(apiKey: string, model: string = DEFAULT_OPENAI_MODEL) {
     this.client = new OpenAI({ apiKey });
     this.model = model;
   }
@@ -62,10 +66,8 @@ class GeminiProvider implements AIProviderInterface {
   private ai: GoogleGenAI;
   private model: string;
 
-  constructor(apiKey: string, model: string = "gemini-2.5-pro") {
-    this.ai = new GoogleGenAI({
-      apiKey: apiKey,
-    });
+  constructor(apiKey: string, model: string = DEFAULT_GEMINI_MODEL) {
+    this.ai = new GoogleGenAI({ apiKey });
     this.model = model;
   }
 
@@ -120,10 +122,11 @@ class GeminiProvider implements AIProviderInterface {
 
       console.log(`[Gemini] Response received (${duration}ms), content length: ${content.length} chars`);
       return { content };
-    } catch (error: any) {
+    } catch (error: unknown) {
       const duration = Date.now() - startTime;
       console.error(`[Gemini] API error (${duration}ms):`, error);
-      throw new Error(`Gemini API error: ${error.message || error}`);
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Gemini API error: ${message}`);
     }
   }
 }
@@ -133,7 +136,7 @@ class ClaudeProvider implements AIProviderInterface {
   private apiKey: string;
   private model: string;
 
-  constructor(apiKey: string, model: string = "claude-sonnet-4-20250514") {
+  constructor(apiKey: string, model: string = DEFAULT_CLAUDE_MODEL) {
     this.apiKey = apiKey;
     this.model = model;
   }
@@ -190,11 +193,11 @@ class ClaudeProvider implements AIProviderInterface {
 export function createAIProvider(config: AIProviderConfig): AIProviderInterface {
   switch (config.provider) {
     case "openai":
-      return new OpenAIProvider(config.apiKey, config.model || "gpt-4.1-2025-04-14");
+      return new OpenAIProvider(config.apiKey, config.model || DEFAULT_OPENAI_MODEL);
     case "gemini":
-      return new GeminiProvider(config.apiKey, config.model || "gemini-2.5-pro");
+      return new GeminiProvider(config.apiKey, config.model || DEFAULT_GEMINI_MODEL);
     case "claude":
-      return new ClaudeProvider(config.apiKey, config.model || "claude-sonnet-4-20250514");
+      return new ClaudeProvider(config.apiKey, config.model || DEFAULT_CLAUDE_MODEL);
     default:
       throw new Error(`Unsupported AI provider: ${config.provider}`);
   }
@@ -207,7 +210,7 @@ export function getProviderConfig(): AIProviderConfig | null {
     return {
       provider: "openai",
       apiKey: process.env.OPENAI_API_KEY,
-      model: process.env.OPENAI_MODEL || "gpt-4.1-2025-04-14",
+      model: process.env.OPENAI_MODEL || DEFAULT_OPENAI_MODEL,
     };
   }
 
@@ -216,7 +219,7 @@ export function getProviderConfig(): AIProviderConfig | null {
     return {
       provider: "gemini",
       apiKey: process.env.GEMINI_API_KEY,
-      model: process.env.GEMINI_MODEL || "gemini-2.5-pro",
+      model: process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL,
     };
   }
 
@@ -225,7 +228,7 @@ export function getProviderConfig(): AIProviderConfig | null {
     return {
       provider: "claude",
       apiKey: process.env.CLAUDE_API_KEY,
-      model: process.env.CLAUDE_MODEL || "claude-sonnet-4-20250514",
+      model: process.env.CLAUDE_MODEL || DEFAULT_CLAUDE_MODEL,
     };
   }
 

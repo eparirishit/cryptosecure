@@ -1,4 +1,4 @@
-import { detectLanguage } from "@/lib/analyzer/prompts";
+import { detectLanguage } from "@/lib/analyzer/analyze/prompts";
 import {
   ALLOWED_FILE_TYPES,
   ALLOWED_LANGUAGES,

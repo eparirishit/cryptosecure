@@ -1,6 +1,6 @@
 /**
  * AI Prompts for Hacker Mode - Multi-Stage Adversarial Analysis
- * 
+ *
  * These prompts guide AI agents to think like attackers and defenders
  * to provide comprehensive security analysis.
  */
@@ -115,7 +115,7 @@ Be specific and provide code examples where applicable.`;
 
 export function getAttackSurfacePrompt(code: string, language: string, functions: Array<{name: string, startLine: number, endLine: number}>): string {
   const functionList = functions.map(f => `- ${f.name} (lines ${f.startLine}-${f.endLine})`).join('\n');
-  
+
   return `${ATTACK_SURFACE_PROMPT}
 
 Contract Language: ${language.toUpperCase()}
@@ -133,7 +133,7 @@ Analyze this contract and return the attack surfaces in a JSON object with an "a
 
 export function getHackerAgentPrompt(code: string, language: string, attackSurfaces: Array<{id: string, entryPoint: string, riskFactors: string[], notes: string}>): string {
   const surfacesJson = JSON.stringify(attackSurfaces, null, 2);
-  
+
   return `${HACKER_AGENT_PROMPT}
 
 Contract Language: ${language.toUpperCase()}
@@ -151,7 +151,7 @@ Generate exploit attempts for these attack surfaces. Return a JSON object with a
 
 export function getDefenderAgentPrompt(code: string, exploits: Array<{id: string, title: string, type: string, prerequisites: string, steps: string[]}>): string {
   const exploitsJson = JSON.stringify(exploits, null, 2);
-  
+
   return `${DEFENDER_AGENT_PROMPT}
 
 Contract Code:
@@ -164,4 +164,3 @@ ${exploitsJson}
 
 For each exploit, provide defensive recommendations. Return a JSON object with a "recommendations" key containing the array of defense recommendations.`;
 }
-

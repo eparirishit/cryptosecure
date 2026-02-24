@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import { AnalysisResult, Finding } from "@/types/analysis";
+import { AnalysisResult } from "@/types/analysis";
 import crypto from "crypto";
-import { SYSTEM_PROMPT, createAnalysisPrompt } from "@/lib/analyzer/prompts";
+import { SYSTEM_PROMPT, createAnalysisPrompt, formatPreviousFindingsContext } from "@/lib/analyzer/analyze/prompts";
 import { createAIProvider, getProviderConfig } from "@/lib/analyzer/ai-providers";
 
 const analysisCache = new Map<string, AnalysisResult>();
@@ -10,36 +10,6 @@ function extractContractName(filename?: string): string {
   if (!filename) return "contract";
   const nameWithoutExt = filename.replace(/\.(tact|fc|func)$/i, "");
   return nameWithoutExt || "contract";
-}
-
-function formatPreviousFindingsContext(findings: Finding[]): string {
-  if (!findings || findings.length === 0) return '';
-
-  const lines = [
-    'THIS IS A RE-ANALYSIS OF PREVIOUSLY PATCHED CODE.',
-    'The following CRITICAL/HIGH findings were identified in the previous analysis and fixes were applied:',
-    ''
-  ];
-
-  for (const f of findings) {
-    lines.push(`- [${f.severity}] ${f.id}: ${f.title}`);
-    if (f.codeChanges?.vulnerableCode) {
-      lines.push(`  Vulnerable pattern: ${f.codeChanges.vulnerableCode.split('\n')[0].trim()}`);
-    }
-    if (f.codeChanges?.fixedCode) {
-      lines.push(`  Applied fix: ${f.codeChanges.fixedCode.split('\n')[0].trim()}`);
-    }
-  }
-
-  lines.push('');
-  lines.push('INSTRUCTIONS FOR RE-ANALYSIS:');
-  lines.push('1. Verify each issue above is resolved in the current code');
-  lines.push('2. If the vulnerable pattern is GONE, do NOT re-report it — add it to positiveFindings instead');
-  lines.push('3. Only report issues that STILL EXIST in the code');
-  lines.push('4. The security score MUST improve relative to the previous score if fixes were applied');
-  lines.push('5. Focus on finding any remaining MEDIUM/LOW issues or NEW issues not previously detected');
-
-  return lines.join('\n');
 }
 
 function parseAIResponse(responseText: string): AnalysisResult {
@@ -119,7 +89,6 @@ export async function POST(req: Request) {
     console.log(`[AI Provider] Using ${providerConfig.provider.toUpperCase()} with model: ${providerConfig.model || 'default'}`);
     console.log(`[Analysis] Contract: ${finalContractName}, Lines: ${code.split('\n').length}${isReanalysis ? `, Re-analysis with ${previousFindings.length} previous findings` : ''}`);
 
-    const systemPrompt = SYSTEM_PROMPT;
     const analysisPrompt = createAnalysisPrompt(code, finalContractName, additionalContext);
 
     // Call AI provider
@@ -128,7 +97,7 @@ export async function POST(req: Request) {
     try {
       console.log(`[AI Request] Sending request to ${providerConfig.provider.toUpperCase()}...`);
       const provider = createAIProvider(providerConfig);
-      const response = await provider.generateResponse(systemPrompt, analysisPrompt);
+      const response = await provider.generateResponse(SYSTEM_PROMPT, analysisPrompt);
       const duration = Date.now() - startTime;
       console.log(`[AI Response] Received response from ${providerConfig.provider.toUpperCase()} in ${duration}ms`);
 
@@ -143,13 +112,14 @@ export async function POST(req: Request) {
       // Log analysis results
       console.log(`[Analysis Complete] Score: ${aiResponse.securityScore}, Grade: ${aiResponse.grade}, Findings: ${aiResponse.findings.length} (${aiResponse.findingsSummary.critical} critical, ${aiResponse.findingsSummary.high} high)`);
 
-    } catch (error: any) {
+    } catch (error: unknown) {
       const duration = Date.now() - startTime;
-      console.error(`[AI Error] ${providerConfig.provider.toUpperCase()} request failed after ${duration}ms:`, error.message || error);
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[AI Error] ${providerConfig.provider.toUpperCase()} request failed after ${duration}ms:`, message);
       return NextResponse.json(
-        { 
-          error: `Failed to analyze code with ${providerConfig.provider.toUpperCase()}.`, 
-          details: error.message || "Unknown error",
+        {
+          error: `Failed to analyze code with ${providerConfig.provider.toUpperCase()}.`,
+          details: message,
           hint: `Please check your ${providerConfig.provider.toUpperCase()} API key and try again.`
         },
         { status: 500 }
@@ -162,12 +132,13 @@ export async function POST(req: Request) {
 
     return NextResponse.json(aiResponse);
 
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
     console.error("Analysis failed:", error);
     return NextResponse.json(
-      { 
-        error: "Failed to analyze code.", 
-        details: error.message || "Unknown error" 
+      {
+        error: "Failed to analyze code.",
+        details: message
       },
       { status: 500 }
     );

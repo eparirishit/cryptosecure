@@ -1,3 +1,35 @@
+import { Finding } from "@/types/analysis";
+
+export function formatPreviousFindingsContext(findings: Finding[]): string {
+  if (!findings || findings.length === 0) return '';
+
+  const lines = [
+    'THIS IS A RE-ANALYSIS OF PREVIOUSLY PATCHED CODE.',
+    'The following CRITICAL/HIGH findings were identified in the previous analysis and fixes were applied:',
+    ''
+  ];
+
+  for (const f of findings) {
+    lines.push(`- [${f.severity}] ${f.id}: ${f.title}`);
+    if (f.codeChanges?.vulnerableCode) {
+      lines.push(`  Vulnerable pattern: ${f.codeChanges.vulnerableCode.split('\n')[0].trim()}`);
+    }
+    if (f.codeChanges?.fixedCode) {
+      lines.push(`  Applied fix: ${f.codeChanges.fixedCode.split('\n')[0].trim()}`);
+    }
+  }
+
+  lines.push('');
+  lines.push('INSTRUCTIONS FOR RE-ANALYSIS:');
+  lines.push('1. Verify each issue above is resolved in the current code');
+  lines.push('2. If the vulnerable pattern is GONE, do NOT re-report it — add it to positiveFindings instead');
+  lines.push('3. Only report issues that STILL EXIST in the code');
+  lines.push('4. The security score MUST improve relative to the previous score if fixes were applied');
+  lines.push('5. Focus on finding any remaining MEDIUM/LOW issues or NEW issues not previously detected');
+
+  return lines.join('\n');
+}
+
 export const SYSTEM_PROMPT = `
 You are a senior TON smart contract security auditor with deep expertise in FunC, Tact, and the TVM. Analyze contracts for vulnerabilities and output strictly structured JSON.
 

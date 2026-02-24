@@ -1,7 +1,6 @@
 "use client";
 
 import { ScrollBar } from "@/components/ui/scroll-area";
-import { cn } from "@/lib/utils";
 import * as Diff from 'diff';
 import { useMemo, forwardRef, useImperativeHandle, useRef } from "react";
 import * as ScrollAreaPrimitive from "@radix-ui/react-scroll-area";
@@ -37,13 +36,6 @@ export const CodeDiffViewer = forwardRef<{ scrollTo: (top: number) => void }, Co
      return Diff.diffLines(originalCode, patchedCode, { newlineIsToken: false });
   }, [originalCode, patchedCode]);
 
-  // Split code into lines for side-by-side view
-  const originalLines = useMemo(() => originalCode.split('\n'), [originalCode]);
-  const patchedLines = useMemo(() => patchedCode.split('\n'), [patchedCode]);
-
-  // We need to reconstruct the lines to show line numbers properly
-  // Diff library returns blocks of added/removed/common text
-  
   const renderDiff = () => {
       const lines: React.ReactNode[] = [];
       let originalLineNumber = 1;
@@ -114,91 +106,131 @@ export const CodeDiffViewer = forwardRef<{ scrollTo: (top: number) => void }, Co
       return lines;
   };
 
-  // Render side-by-side view - returns separate left and right content
+  // Render side-by-side view.
+  //
+  // Two invariants that keep the panels vertically aligned:
+  //   1. leftLines.length === rightLines.length at all times (padding rows
+  //      are inserted on the shorter side of every modification hunk).
+  //   2. Every row — content or padding — is exactly ONE line tall.
+  //      Wrapping is disabled (whitespace-pre) so a long line never pushes
+  //      subsequent rows out of sync with the opposite panel.
   const renderSideBySide = () => {
     const leftLines: React.ReactNode[] = [];
     const rightLines: React.ReactNode[] = [];
     let originalLineNumber = 1;
     let patchedLineNumber = 1;
+    let rowKey = 0;
 
-    diffChanges.forEach((part) => {
-      const partLines = part.value.split('\n');
-      if (partLines[partLines.length - 1] === '') partLines.pop();
+    // Gutter shared between all row types (keeps column width identical).
+    const GUTTER = "w-12 flex-shrink-0 text-right select-none pr-2 text-xs py-0.5 font-mono";
+    // Code cell: whitespace-pre so long lines never wrap and row heights stay equal.
+    const CODE = "flex-1 whitespace-pre font-mono text-sm py-0.5 pl-2";
 
-      if (part.added) {
-        // Only show in right column
-        partLines.forEach((line) => {
-          leftLines.push(
-            <div key={`left-add-${patchedLineNumber}`} className="flex text-neutral-600 bg-neutral-950/50">
-              <div className="w-12 flex-shrink-0 text-right mr-4 select-none border-r border-neutral-800 pr-2 opacity-30 text-xs py-0.5 font-mono">
-                {/* Empty for added lines */}
+    // A blank placeholder row — height matches a real code row because it
+    // contains a non-breaking space (empty text would collapse in some browsers).
+    const emptyRow = (side: "left" | "right") => (
+      <div key={`${side}-empty-${rowKey}`} className="flex bg-neutral-950/40">
+        <div className={`${GUTTER} border-r border-neutral-800/40`} />
+        <pre className={`${CODE} select-none text-transparent`}>{"\u00A0"}</pre>
+      </div>
+    );
+
+    const splitPart = (value: string) => {
+      const lines = value.split("\n");
+      if (lines[lines.length - 1] === "") lines.pop();
+      return lines;
+    };
+
+    let i = 0;
+    while (i < diffChanges.length) {
+      const part = diffChanges[i];
+      const partLines = splitPart(part.value);
+
+      if (part.removed) {
+        // Look ahead: a `removed` immediately followed by `added` is a
+        // modification hunk — align both sides row-by-row and pad the
+        // shorter side so the panels stay in sync.
+        const next = diffChanges[i + 1];
+        const addedLines = next?.added ? splitPart(next.value) : [];
+        const hunkLen = Math.max(partLines.length, addedLines.length);
+
+        for (let j = 0; j < hunkLen; j++) {
+          if (j < partLines.length) {
+            leftLines.push(
+              <div key={`left-del-${rowKey}`} className="flex bg-red-900/20 text-red-300">
+                <div className={`${GUTTER} border-r border-red-900/50 opacity-70`}>
+                  {originalLineNumber++}
+                </div>
+                <pre className={`${CODE} line-through decoration-red-500/50`}>
+                  <span className="select-none mr-1 opacity-50">-</span>{partLines[j]}
+                </pre>
               </div>
-              <pre className="flex-1 whitespace-pre-wrap break-all font-mono text-sm py-0.5 pl-2 text-neutral-700">
-                {/* Empty */}
-              </pre>
-            </div>
-          );
+            );
+          } else {
+            leftLines.push(emptyRow("left"));
+          }
+
+          if (j < addedLines.length) {
+            rightLines.push(
+              <div key={`right-add-${rowKey}`} className="flex bg-green-900/20 text-green-300">
+                <div className={`${GUTTER} border-r border-green-900/50 opacity-70`}>
+                  {patchedLineNumber++}
+                </div>
+                <pre className={CODE}>
+                  <span className="select-none mr-1 opacity-50">+</span>{addedLines[j]}
+                </pre>
+              </div>
+            );
+          } else {
+            rightLines.push(emptyRow("right"));
+          }
+
+          rowKey++;
+        }
+
+        // Consume both parts (skip ahead past the paired `added` if present).
+        i += next?.added ? 2 : 1;
+      } else if (part.added) {
+        // Pure insertion — nothing was removed immediately before this block.
+        partLines.forEach((line) => {
+          leftLines.push(emptyRow("left"));
           rightLines.push(
-            <div key={`right-add-${patchedLineNumber}`} className="flex text-green-300 bg-green-900/20">
-              <div className="w-12 flex-shrink-0 text-right mr-4 select-none border-r border-green-900/50 pr-2 opacity-80 text-xs py-0.5 font-mono">
+            <div key={`right-add-${rowKey}`} className="flex bg-green-900/20 text-green-300">
+              <div className={`${GUTTER} border-r border-green-900/50 opacity-70`}>
                 {patchedLineNumber++}
               </div>
-              <pre className="flex-1 whitespace-pre-wrap break-all font-mono text-sm py-0.5 pl-2">
-                <span className="select-none mr-2 opacity-50">+</span>{line}
+              <pre className={CODE}>
+                <span className="select-none mr-1 opacity-50">+</span>{line}
               </pre>
             </div>
           );
+          rowKey++;
         });
-      } else if (part.removed) {
-        // Only show in left column
-        partLines.forEach((line) => {
-          leftLines.push(
-            <div key={`left-del-${originalLineNumber}`} className="flex text-red-300 opacity-80 bg-red-900/20">
-              <div className="w-12 flex-shrink-0 text-right mr-4 select-none border-r border-red-900/50 pr-2 opacity-80 text-xs py-0.5 font-mono">
-                {originalLineNumber++}
-              </div>
-              <pre className="flex-1 whitespace-pre-wrap break-all font-mono text-sm py-0.5 pl-2 line-through decoration-red-500/50">
-                <span className="select-none mr-2 opacity-50">-</span>{line}
-              </pre>
-            </div>
-          );
-          rightLines.push(
-            <div key={`right-del-${originalLineNumber}`} className="flex text-neutral-600 bg-neutral-950/50">
-              <div className="w-12 flex-shrink-0 text-right mr-4 select-none border-r border-neutral-800 pr-2 opacity-30 text-xs py-0.5 font-mono">
-                {/* Empty for removed lines */}
-              </div>
-              <pre className="flex-1 whitespace-pre-wrap break-all font-mono text-sm py-0.5 pl-2 text-neutral-700">
-                {/* Empty */}
-              </pre>
-            </div>
-          );
-        });
+        i++;
       } else {
-        // Show in both columns
+        // Unchanged lines — shown identically on both sides.
         partLines.forEach((line) => {
           leftLines.push(
-            <div key={`left-same-${originalLineNumber}`} className="flex text-neutral-400 hover:bg-neutral-900/30">
-              <div className="w-12 flex-shrink-0 text-right mr-4 select-none border-r border-neutral-800 pr-2 opacity-30 text-xs py-0.5 font-mono">
+            <div key={`left-same-${rowKey}`} className="flex text-neutral-400 hover:bg-neutral-900/30">
+              <div className={`${GUTTER} border-r border-neutral-800 opacity-30`}>
                 {originalLineNumber++}
               </div>
-              <pre className="flex-1 whitespace-pre-wrap break-all font-mono text-sm py-0.5 pl-2">
-                {line}
-              </pre>
+              <pre className={CODE}>{line}</pre>
             </div>
           );
           rightLines.push(
-            <div key={`right-same-${patchedLineNumber}`} className="flex text-neutral-400 hover:bg-neutral-900/30">
-              <div className="w-12 flex-shrink-0 text-right mr-4 select-none border-r border-neutral-800 pr-2 opacity-30 text-xs py-0.5 font-mono">
+            <div key={`right-same-${rowKey}`} className="flex text-neutral-400 hover:bg-neutral-900/30">
+              <div className={`${GUTTER} border-r border-neutral-800 opacity-30`}>
                 {patchedLineNumber++}
               </div>
-              <pre className="flex-1 whitespace-pre-wrap break-all font-mono text-sm py-0.5 pl-2">
-                {line}
-              </pre>
+              <pre className={CODE}>{line}</pre>
             </div>
           );
+          rowKey++;
         });
+        i++;
       }
-    });
+    }
 
     return { leftLines, rightLines };
   };
@@ -278,36 +310,42 @@ export const CodeDiffViewer = forwardRef<{ scrollTo: (top: number) => void }, Co
           const { leftLines, rightLines } = renderSideBySide();
           return (
             <div className="flex-1 flex overflow-hidden">
+              {/* LEFT — original */}
               <ScrollAreaPrimitive.Root className="relative overflow-hidden flex-1 w-1/2 border-r border-neutral-800">
-                <ScrollAreaPrimitive.Viewport 
-                    ref={leftScrollRef} 
-                    className="h-full w-full rounded-[inherit]"
-                    onScroll={handleLeftScroll}
+                <ScrollAreaPrimitive.Viewport
+                  ref={leftScrollRef}
+                  className="h-full w-full rounded-[inherit]"
+                  onScroll={handleLeftScroll}
                 >
-                    <div className="p-4 space-y-0.5">
-                        <div className="sticky top-0 bg-neutral-900/95 backdrop-blur-sm z-10 pb-2 mb-2 border-b border-neutral-800">
-                          <span className="text-xs font-bold text-neutral-400 tracking-wider">ORIGINAL</span>
-                        </div>
-                        {leftLines}
+                  {/* min-w-max lets long non-wrapping lines expand the scroll area */}
+                  <div className="p-4 space-y-0.5 min-w-max">
+                    <div className="sticky top-0 bg-neutral-900/95 backdrop-blur-sm z-10 pb-2 mb-2 border-b border-neutral-800">
+                      <span className="text-xs font-bold text-neutral-400 tracking-wider">ORIGINAL</span>
                     </div>
+                    {leftLines}
+                  </div>
                 </ScrollAreaPrimitive.Viewport>
-                <ScrollBar />
+                <ScrollBar orientation="vertical" />
+                <ScrollBar orientation="horizontal" />
                 <ScrollAreaPrimitive.Corner />
               </ScrollAreaPrimitive.Root>
+
+              {/* RIGHT — modified */}
               <ScrollAreaPrimitive.Root className="relative overflow-hidden flex-1 w-1/2">
-                <ScrollAreaPrimitive.Viewport 
-                    ref={rightScrollRef} 
-                    className="h-full w-full rounded-[inherit]"
-                    onScroll={handleRightScroll}
+                <ScrollAreaPrimitive.Viewport
+                  ref={rightScrollRef}
+                  className="h-full w-full rounded-[inherit]"
+                  onScroll={handleRightScroll}
                 >
-                    <div className="p-4 space-y-0.5">
-                        <div className="sticky top-0 bg-neutral-900/95 backdrop-blur-sm z-10 pb-2 mb-2 border-b border-neutral-800">
-                          <span className="text-xs font-bold text-neutral-400 tracking-wider">MODIFIED</span>
-                        </div>
-                        {rightLines}
+                  <div className="p-4 space-y-0.5 min-w-max">
+                    <div className="sticky top-0 bg-neutral-900/95 backdrop-blur-sm z-10 pb-2 mb-2 border-b border-neutral-800">
+                      <span className="text-xs font-bold text-neutral-400 tracking-wider">MODIFIED</span>
                     </div>
+                    {rightLines}
+                  </div>
                 </ScrollAreaPrimitive.Viewport>
-                <ScrollBar />
+                <ScrollBar orientation="vertical" />
+                <ScrollBar orientation="horizontal" />
                 <ScrollAreaPrimitive.Corner />
               </ScrollAreaPrimitive.Root>
             </div>

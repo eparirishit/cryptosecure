@@ -1,6 +1,6 @@
 import { Vulnerability, LegacySeverity } from "@/types/analysis";
 import { RULES } from "./rules";
-import { mapFunctions } from "./utils";
+import { mapFunctions } from "../utils";
 
 export interface StaticAnalysisResult {
   vulnerabilities: Vulnerability[];
@@ -29,8 +29,7 @@ function mapSeverity(s: string): LegacySeverity {
 }
 
 export function analyzeCodeStatic(rawCode: string): StaticAnalysisResult {
-  const cleanCode = rawCode;
-  const codeLines = rawCode.split("\n"); 
+  const codeLines = rawCode.split("\n");
   const functionMap = mapFunctions(rawCode);
   const vulnerabilities: Vulnerability[] = [];
 
@@ -44,24 +43,21 @@ export function analyzeCodeStatic(rawCode: string): StaticAnalysisResult {
   // Helper to extract snippet
   const getSnippet = (lineNo: number) => {
       if (lineNo <= 0 || lineNo > codeLines.length) return undefined;
-      // Return the specific line + optionally context
       return codeLines[lineNo - 1].trim();
   };
 
   // 1. Check specific Rules
   for (const rule of RULES) {
-    const matches = rule.pattern.test(cleanCode);
-    
+    const matches = rule.pattern.test(rawCode);
     const isVulnerable = rule.invert ? !matches : matches;
 
     if (isVulnerable) {
-      // Deduct score
       switch (rule.severity) {
         case "CRITICAL": score -= 25; break;
-        case "HIGH": score -= 15; break;
-        case "MEDIUM": score -= 10; break;
-        case "LOW": score -= 5; break;
-        case "INFORMATIONAL": score -= 0; break;
+        case "HIGH":     score -= 15; break;
+        case "MEDIUM":   score -= 10; break;
+        case "LOW":      score -= 5;  break;
+        // INFORMATIONAL findings carry no score penalty
       }
 
       let lineNo = 0; // 0 indicates "General/Global"
@@ -76,13 +72,12 @@ export function analyzeCodeStatic(rawCode: string): StaticAnalysisResult {
                 lineNo = i + 1;
                 funcName = findFunction(lineNo);
                 affectedCode = getSnippet(lineNo);
-                break; // Just report the first occurrence for now
+                break;
             }
         }
       } else {
           // Rule missed a GOOD pattern (Inverted).
-          // E.g. Missing Bounced Check
-          lineNo = 1; 
+          lineNo = 1;
           if (rule.id === "FUNC_BOUNCED_CHECK") {
              const recv = functionMap.find(f => f.name === "recv_internal");
              if (recv) {
@@ -91,7 +86,6 @@ export function analyzeCodeStatic(rawCode: string): StaticAnalysisResult {
                  affectedCode = `// Missing checks in ${recv.name}`;
              }
           } else if (rule.id === "FUNC_OWNER_CHECK") {
-              // If global owner check missing, maybe point to a sensitive function found
               const sensitive = functionMap.find(f => f.name.includes("withdraw") || f.name.includes("admin"));
               if (sensitive) {
                   lineNo = sensitive.startLine;
@@ -113,15 +107,14 @@ export function analyzeCodeStatic(rawCode: string): StaticAnalysisResult {
       });
     }
   }
-  
+
   // TipJar specific logic override
-  const hasWithdraw = /total_balance\s*-=/.test(cleanCode);
-  const hasAuth = /equal_slices/.test(cleanCode);
-  
+  const hasWithdraw = /total_balance\s*-=/.test(rawCode);
+  const hasAuth = /equal_slices/.test(rawCode);
+
   if (hasWithdraw && !hasAuth) {
      const exists = vulnerabilities.find(v => v.title === "Potential Unprotected Withdrawal");
      if (!exists) {
-         // Try to find line for total_balance -=
          let lineNo = 0;
          let funcName = undefined;
          let affectedCode = undefined;
@@ -163,37 +156,23 @@ export function analyzeCodeStatic(rawCode: string): StaticAnalysisResult {
       if (vuln.line <= 0) continue;
 
       if (vuln.title === "Potential Unprotected Withdrawal" || vuln.title === "Missing Owner Access Control") {
-          // Heuristic: Insert check BEFORE the vulnerable line
-          const insertLineIndex = vuln.line - 1; // 0-based index
+          const insertLineIndex = vuln.line - 1;
           const indentation = patchedLines[insertLineIndex].match(/^\s*/)?.[0] || "";
           const fixLine = `${indentation}throw_unless(401, equal_slices(sender_address, owner_address)); ;; Auto-fixed security check`;
           patchedLines.splice(insertLineIndex, 0, fixLine);
-      } 
+      }
       else if (vuln.title === "Missing Bounced Message Check") {
-          // Heuristic: Insert check at start of function (usually line + 1 for opening brace)
-          // line is likely the function definition line
-          // We try to find the opening brace
-          let insertLineIndex = vuln.line; // Default to next line
-          // Check if brace is on same line
+          let insertLineIndex = vuln.line;
           if (patchedLines[vuln.line-1].includes("{")) {
              insertLineIndex = vuln.line;
-          } else {
-              // Maybe brace is on next line? Just default to next for now.
           }
-          
-          const indentation = "    "; // Default indent
-          const fixLine = `${indentation}if (flags & 1) { return (); } ;; Auto-fixed bounced check`;
+          const fixLine = `    if (flags & 1) { return (); } ;; Auto-fixed bounced check`;
           patchedLines.splice(insertLineIndex, 0, fixLine);
       }
       else if (vuln.title === "Unchecked Message Sending") {
-         // Heuristic: Replace mode 0/1/2 with 64
-         // Find the line with send_raw_message
          const lineIndex = vuln.line - 1;
          const originalLine = patchedLines[lineIndex];
-         // Replace the mode argument
          const fixedLine = originalLine.replace(/(send_raw_message\s*\(\s*[^,]+,\s*)(0|1|2)(\s*\))/, "$164$3");
-         
-         // If replacement happened, update line
          if (fixedLine !== originalLine) {
              patchedLines[lineIndex] = fixedLine + " ;; Auto-fixed to mode 64";
          }
@@ -202,7 +181,6 @@ export function analyzeCodeStatic(rawCode: string): StaticAnalysisResult {
 
   const patchedCode = patchedLines.join("\n");
 
-  // Calculate Stats
   const stats = {
       total: vulnerabilities.length,
       critical: vulnerabilities.filter(v => v.severity === "Critical").length,

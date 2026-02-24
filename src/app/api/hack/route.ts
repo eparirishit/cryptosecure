@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 import { HackerModeResult, ExploitAttempt, Finding, Severity } from "@/types/analysis";
-import { enumerateAttackSurface } from "@/lib/analyzer/attack-surface";
-import { generateExploits } from "@/lib/analyzer/hacker-agent";
-import { validateExploitFeasibility } from "@/lib/analyzer/feasibility-check";
-import { generateDefenseRecommendations } from "@/lib/analyzer/defender-agent";
+import { enumerateAttackSurface } from "@/lib/analyzer/hacker/attack-surface";
+import { generateExploits } from "@/lib/analyzer/hacker/hacker-agent";
+import { validateExploitFeasibility } from "@/lib/analyzer/hacker/feasibility-check";
+import { generateDefenseRecommendations } from "@/lib/analyzer/hacker/defender-agent";
 import { getProviderConfig, createAIProvider } from "@/lib/analyzer/ai-providers";
 
 // Simple rate limiting (in-memory for MVP)
