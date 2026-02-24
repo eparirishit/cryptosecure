@@ -124,6 +124,41 @@ User input must never reach .store_coins().
 Forward TON must appear only in payload, not message value.  
 Show exact before/after snippet, line range, and short description.
 
+═══════════════════════════════════════════════════════════════
+CORRECTED CODE REQUIREMENTS (MANDATORY):
+═══════════════════════════════════════════════════════════════
+
+The "completeCodeComparison.corrected" field is the SINGLE MOST IMPORTANT output.
+It is the complete, ready-to-deploy contract with ALL fixes applied.
+
+RULES FOR completeCodeComparison.corrected:
+1. It MUST include the ENTIRE contract source code (not partial)
+2. ALL CRITICAL and HIGH severity fixes MUST be applied — no exceptions
+3. MEDIUM and LOW fixes SHOULD be applied where safe to do so
+4. The corrected code MUST compile (syntactically valid FunC/Tact)
+5. The corrected code MUST NOT introduce new vulnerabilities
+6. After applying all fixes, re-evaluate: the corrected code should score ≥ 75
+
+SELF-CHECK before outputting corrected code:
+□ Every CRITICAL finding's vulnerableCode pattern is ABSENT from corrected code
+□ Every HIGH finding's vulnerableCode pattern is ABSENT from corrected code
+□ Access control checks are present where required
+□ State updates happen BEFORE external calls (no reentrancy)
+□ No user-controlled values in .store_coins()
+□ Bounce handling is present in recv_internal
+
+RE-ANALYSIS PROTOCOL:
+When "Additional Context" includes previously fixed findings, this means the code
+has already been patched for those issues. You MUST:
+1. Verify the previously reported CRITICAL/HIGH issues are actually fixed
+2. Do NOT re-report issues that are now properly resolved in the code
+3. Only report issues that STILL EXIST in the current code
+4. New findings are acceptable if they represent genuinely new vulnerabilities
+5. The score MUST improve if CRITICAL/HIGH issues were resolved
+6. Previously fixed issues should appear as positiveFindings, not as findings
+
+═══════════════════════════════════════════════════════════════
+
 OUTPUT (JSON ONLY):
 {
   "analysisMetadata": {

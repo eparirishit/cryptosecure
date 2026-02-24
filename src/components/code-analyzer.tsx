@@ -265,94 +265,6 @@ const autoDetectLanguage = (code: string): { language: LanguageType | null; erro
   };
 };
 
-// Detect code language from content
-const detectCodeLanguage = (code: string): string | null => {
-  const codeLower = code.toLowerCase().trim();
-  
-  // Check for Solidity patterns
-  if (codeLower.includes('pragma solidity') || 
-      codeLower.includes('contract ') || 
-      codeLower.includes('library ') ||
-      codeLower.includes('interface ') ||
-      codeLower.includes('using ') ||
-      codeLower.includes('modifier ') ||
-      codeLower.includes('event ') ||
-      codeLower.includes('enum ')) {
-    return 'solidity';
-  }
-  
-  // Check for Tact patterns
-  if (codeLower.includes('import "@stdlib/') ||
-      codeLower.includes('import std::') ||
-      codeLower.includes('message ') ||
-      codeLower.includes('init()') ||
-      codeLower.includes('get()') ||
-      codeLower.includes('receive()')) {
-    return 'tact';
-  }
-  
-  // Check for FunC patterns
-  if (codeLower.includes('() recv_internal') ||
-      codeLower.includes('() recv_external') ||
-      codeLower.includes('() recv') ||
-      codeLower.includes('() get_method_name') ||
-      codeLower.includes('() get_balance') ||
-      codeLower.includes('() throw_unless') ||
-      codeLower.includes('() throw_if') ||
-      codeLower.includes('() throw') ||
-      codeLower.includes('() slice') ||
-      codeLower.includes('() load_') ||
-      codeLower.includes('() store_')) {
-    return 'func';
-  }
-  
-  // Check for FC patterns (Fift Continuation)
-  if (codeLower.includes('{') && codeLower.includes('}') && 
-      (codeLower.includes('dup') || codeLower.includes('swap') || codeLower.includes('rot'))) {
-    return 'fc';
-  }
-  
-  return null;
-};
-
-// Validate code matches selected language
-const validateCodeLanguage = (code: string, selectedLanguage: string): { valid: boolean; message?: string } => {
-  if (!code.trim() || !selectedLanguage) {
-    return { valid: true }; // No validation needed if empty
-  }
-  
-  const detectedLanguage = detectCodeLanguage(code);
-  
-  if (!detectedLanguage) {
-    return { valid: true }; // Can't detect, allow it
-  }
-  
-  // Map detected language to our language types
-  const languageMap: Record<string, LanguageType> = {
-    'solidity': 'func', // Solidity is not in our allowed list, but we'll treat it as invalid
-    'tact': 'tact',
-    'func': 'func',
-    'fc': 'fc'
-  };
-  
-  const mappedLanguage = languageMap[detectedLanguage];
-  
-  // If detected language doesn't match selected language
-  if (mappedLanguage && mappedLanguage !== selectedLanguage.toLowerCase()) {
-    if (detectedLanguage === 'solidity') {
-      return { 
-        valid: false, 
-        message: `Detected Solidity code, but selected language is ${selectedLanguage.toUpperCase()}. Please select the correct language or paste ${selectedLanguage.toUpperCase()} code.` 
-      };
-    }
-    return { 
-      valid: false, 
-      message: `Code appears to be ${detectedLanguage.toUpperCase()}, but selected language is ${selectedLanguage.toUpperCase()}. Please select the correct language.` 
-    };
-  }
-  
-  return { valid: true };
-};
 
 export function CodeAnalyzer() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -407,6 +319,7 @@ export function CodeAnalyzer() {
   const [hackerStep, setHackerStep] = useState(0);
   const [isGeneratingHackerPdf, setIsGeneratingHackerPdf] = useState(false);
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
+  const [previousFindings, setPreviousFindings] = useState<Finding[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const progressCancelledRef = useRef(false);
 
@@ -456,6 +369,7 @@ export function CodeAnalyzer() {
     setActiveTab(tab);
     setResult(null);
     setError(null);
+    setPreviousFindings([]);
   };
 
   const handleFileSelect = async (file: File) => {
@@ -549,17 +463,9 @@ export function CodeAnalyzer() {
       return;
     }
     
-    // Validate snippet language if in snippet tab
     if (activeTab === "snippet") {
       if (!snippetLanguage || !isValidLanguage(snippetLanguage)) {
         setError("Please select a valid language type (Tact, FC, or Func).");
-        return;
-      }
-      
-      // Validate code matches selected language
-      const validation = validateCodeLanguage(currentCode, snippetLanguage);
-      if (!validation.valid) {
-        setError(validation.message || "Code language doesn't match selected language. Please select the correct language.");
         return;
       }
     }
@@ -593,7 +499,8 @@ export function CodeAnalyzer() {
         body: JSON.stringify({ 
           code: currentCode,
           filename: activeTab === "upload" ? uploadedFile?.name : undefined,
-          contractName: activeTab === "snippet" ? "contract" : undefined
+          contractName: activeTab === "snippet" ? "contract" : undefined,
+          previousFindings: previousFindings.length > 0 ? previousFindings : undefined
         }),
       });
 
@@ -748,14 +655,17 @@ export function CodeAnalyzer() {
       });
 
     let modifiedLines = [...codeLines];
+    let lowestModifiedLine = Infinity;
 
     for (const { startIdx, endIdx, fixedCode } of findingsWithChanges) {
-      // Split fixed code into lines
+      if (endIdx >= lowestModifiedLine) {
+        continue;
+      }
+
       const fixedLines = fixedCode.split('\n');
-      
-      // Replace the lines (endIdx is inclusive, so we need endIdx - startIdx + 1)
       const linesToRemove = endIdx - startIdx + 1;
       modifiedLines.splice(startIdx, linesToRemove, ...fixedLines);
+      lowestModifiedLine = startIdx;
     }
 
     return modifiedLines.join('\n');
@@ -767,18 +677,23 @@ export function CodeAnalyzer() {
       }
       
       const originalCode = getCurrentCode();
-      
-      // Prefer root-level complete code fields if available (more accurate)
       let completeModifiedCode: string;
       
-      if (result.proposedCodeComplete) {
-          // Use the complete fixed code from root level (most accurate)
+      if (result.completeCodeComparison?.hasChanges && result.completeCodeComparison.corrected) {
+          completeModifiedCode = result.completeCodeComparison.corrected;
+      } else if (result.proposedCodeComplete) {
           completeModifiedCode = result.proposedCodeComplete;
       } else if (result.findings.some(f => f.codeChanges)) {
-          // Fallback to applying fixes from individual findings
           completeModifiedCode = applyAllFixes(originalCode, result.findings);
       } else {
-          // No fixes available
+          return;
+      }
+      
+      const normalizedOriginal = normalizeCode(originalCode);
+      const normalizedModified = normalizeCode(completeModifiedCode);
+      
+      if (normalizedOriginal === normalizedModified) {
+          setError("The generated fixes could not be applied to the code. Please review the findings manually and apply fixes by editing the code directly.");
           return;
       }
       
@@ -792,18 +707,22 @@ export function CodeAnalyzer() {
           setActiveTab("snippet");
       }
       
-      // Auto-detect and set language using detectLanguage helper
       const { language: detectedLang, error: detectionError } = autoDetectLanguage(modifiedFix);
       
       if (detectedLang) {
-          // Auto-select the detected language
           setSnippetLanguage(detectedLang);
           setCodeValidationError(null);
           setError(null);
       } else if (detectionError) {
-          // Show validation error if language is not supported
           setCodeValidationError(detectionError);
           setError(detectionError);
+      }
+      
+      if (result?.findings) {
+          const criticalAndHigh = result.findings.filter(
+              f => f.severity === "CRITICAL" || f.severity === "HIGH"
+          );
+          setPreviousFindings(prev => [...prev, ...criticalAndHigh]);
       }
       
       setSnippetCode(modifiedFix);
@@ -825,13 +744,13 @@ export function CodeAnalyzer() {
       return;
     }
 
-    // Capture vulnerability data before clearing state
     const capturedFindings = result?.findings || [];
     const capturedVulnerabilityScore = result?.securityScore ?? null;
+    const previousResult = result;
 
     setIsHacking(true);
     setHackerResult(null);
-    setResult(null); // Clear previous standard results to ensure fresh state
+    setResult(null);
     setHackerStep(0);
     setShowDiff(false);
     setIsEditingFix(false);
@@ -841,13 +760,17 @@ export function CodeAnalyzer() {
         ? snippetLanguage
         : uploadedFile?.name.split('.').pop()?.toLowerCase() || "func";
 
-      // Progress simulation
+      progressCancelledRef.current = false;
+
       const progressPromise = (async () => {
         for (let i = 0; i < hackerProgressSteps.length; i++) {
+          if (progressCancelledRef.current) break;
           setHackerStep(i);
           await new Promise(resolve => setTimeout(resolve, hackerProgressSteps[i].duration));
         }
-        setHackerStep(hackerProgressSteps.length - 1);
+        if (!progressCancelledRef.current) {
+          setHackerStep(hackerProgressSteps.length - 1);
+        }
       })();
 
       const response = await fetch("/api/hack", {
@@ -865,23 +788,24 @@ export function CodeAnalyzer() {
 
       if (!response.ok) {
         const errorMsg = data.details || data.error || "Hacker Mode analysis failed";
-        // Provide more helpful error message for missing API key
         if (errorMsg.includes("AI service not configured") || errorMsg.includes("OPENAI_API_KEY")) {
           throw new Error("OpenAI API key not configured. Please set OPENAI_API_KEY in your .env.local file. See .env.example for reference.");
         }
         throw new Error(errorMsg);
       }
 
-      // Wait for progress to complete
-      await progressPromise;
+      progressCancelledRef.current = true;
+      setHackerStep(hackerProgressSteps.length - 1);
       await new Promise(resolve => setTimeout(resolve, 500));
 
       setHackerResult(data);
     } catch (err: any) {
       setError(err.message || "Hacker Mode analysis failed");
+      setResult(previousResult);
     } finally {
       setIsHacking(false);
       setHackerStep(0);
+      progressCancelledRef.current = false;
     }
   };
 
@@ -1155,45 +1079,20 @@ export function CodeAnalyzer() {
                           const code = newCode.trim();
                           
                           if (code) {
-                            // Auto-detect language when code is provided
                             const { language: detectedLang, error: detectionError } = autoDetectLanguage(code);
                             
                             if (detectedLang) {
-                              // Auto-select the detected language
                               setSnippetLanguage(detectedLang);
-                              // Use detected language for validation
-                              const validation = validateCodeLanguage(code, detectedLang);
-                              if (!validation.valid) {
-                                const errorMsg = validation.message || "Code language doesn't match detected language.";
-                                setCodeValidationError(errorMsg);
-                                setError(errorMsg);
-                              } else {
-                                setCodeValidationError(null);
-                                setError(null);
-                              }
+                              setCodeValidationError(null);
+                              setError(null);
                             } else if (detectionError) {
-                              // Show validation error if language is not supported
                               setCodeValidationError(detectionError);
                               setError(detectionError);
                             } else {
-                              // No detection result, validate against manually selected language if any
-                              if (snippetLanguage && isValidLanguage(snippetLanguage)) {
-                                const validation = validateCodeLanguage(code, snippetLanguage);
-                                if (!validation.valid) {
-                                  const errorMsg = validation.message || "Code language doesn't match selected language.";
-                                  setCodeValidationError(errorMsg);
-                                  setError(errorMsg);
-                                } else {
-                                  setCodeValidationError(null);
-                                  setError(null);
-                                }
-                              } else {
-                                setCodeValidationError(null);
-                                setError(null);
-                              }
+                              setCodeValidationError(null);
+                              setError(null);
                             }
                           } else {
-                            // Code is empty, clear errors
                             setCodeValidationError(null);
                             setError(null);
                           }
@@ -1415,7 +1314,7 @@ export function CodeAnalyzer() {
           </div>
           )}
 
-          {error && !activeTab && (
+          {error && (showDiff || (!isAnalyzing && !isHacking)) && (
             <div className="p-4 bg-red-50 border border-red-200 rounded-lg flex items-center gap-3 text-red-800">
               <ShieldAlert className="h-5 w-5" />
               <p>{error}</p>

@@ -154,7 +154,7 @@ class ClaudeProvider implements AIProviderInterface {
       },
       body: JSON.stringify({
         model: this.model,
-        max_tokens: 16384,
+        max_tokens: 32768,
         temperature: options?.temperature ?? 0.3,
         system: enhancedSystemPrompt,
         messages: [

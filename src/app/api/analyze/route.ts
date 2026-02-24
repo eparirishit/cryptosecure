@@ -1,11 +1,10 @@
 import { NextResponse } from "next/server";
-import { AnalysisResult } from "@/types/analysis";
+import { AnalysisResult, Finding } from "@/types/analysis";
 import crypto from "crypto";
 import { SYSTEM_PROMPT, createAnalysisPrompt } from "@/lib/analyzer/prompts";
 import { createAIProvider, getProviderConfig } from "@/lib/analyzer/ai-providers";
 
-// Simple in-memory cache for demo purposes
-const analysisCache = new Map<string, any>();
+const analysisCache = new Map<string, AnalysisResult>();
 
 function extractContractName(filename?: string): string {
   if (!filename) return "contract";
@@ -13,21 +12,61 @@ function extractContractName(filename?: string): string {
   return nameWithoutExt || "contract";
 }
 
+function formatPreviousFindingsContext(findings: Finding[]): string {
+  if (!findings || findings.length === 0) return '';
+
+  const lines = [
+    'THIS IS A RE-ANALYSIS OF PREVIOUSLY PATCHED CODE.',
+    'The following CRITICAL/HIGH findings were identified in the previous analysis and fixes were applied:',
+    ''
+  ];
+
+  for (const f of findings) {
+    lines.push(`- [${f.severity}] ${f.id}: ${f.title}`);
+    if (f.codeChanges?.vulnerableCode) {
+      lines.push(`  Vulnerable pattern: ${f.codeChanges.vulnerableCode.split('\n')[0].trim()}`);
+    }
+    if (f.codeChanges?.fixedCode) {
+      lines.push(`  Applied fix: ${f.codeChanges.fixedCode.split('\n')[0].trim()}`);
+    }
+  }
+
+  lines.push('');
+  lines.push('INSTRUCTIONS FOR RE-ANALYSIS:');
+  lines.push('1. Verify each issue above is resolved in the current code');
+  lines.push('2. If the vulnerable pattern is GONE, do NOT re-report it — add it to positiveFindings instead');
+  lines.push('3. Only report issues that STILL EXIST in the code');
+  lines.push('4. The security score MUST improve relative to the previous score if fixes were applied');
+  lines.push('5. Focus on finding any remaining MEDIUM/LOW issues or NEW issues not previously detected');
+
+  return lines.join('\n');
+}
+
 function parseAIResponse(responseText: string): AnalysisResult {
-  // Remove markdown code blocks if present
   let cleaned = responseText.trim();
   
-  // Remove ```json and ``` markers
   cleaned = cleaned.replace(/^```json\s*/i, "").replace(/```\s*$/, "");
   cleaned = cleaned.trim();
   
   try {
     const parsed = JSON.parse(cleaned) as AnalysisResult;
     
-    // Validate required fields
-    if (!parsed.analysisMetadata || !parsed.securityScore || !parsed.grade || 
-        !parsed.executiveSummary || !parsed.findingsSummary || !parsed.findings) {
-      throw new Error("Missing required fields in AI response");
+    const missingFields = [];
+    if (!parsed.analysisMetadata) missingFields.push('analysisMetadata');
+    if (parsed.securityScore === undefined || parsed.securityScore === null) missingFields.push('securityScore');
+    if (!parsed.grade) missingFields.push('grade');
+    if (!parsed.executiveSummary) missingFields.push('executiveSummary');
+    if (!parsed.findingsSummary) missingFields.push('findingsSummary');
+    if (!parsed.findings) missingFields.push('findings');
+
+    if (missingFields.length > 0) {
+      throw new Error(`Missing required fields in AI response: ${missingFields.join(', ')}`);
+    }
+    
+    if (!parsed.proposedCodeComplete
+        && parsed.completeCodeComparison?.hasChanges
+        && parsed.completeCodeComparison.corrected) {
+      parsed.proposedCodeComplete = parsed.completeCodeComparison.corrected;
     }
     
     return parsed;
@@ -39,7 +78,7 @@ function parseAIResponse(responseText: string): AnalysisResult {
 
 export async function POST(req: Request) {
   try {
-    const { code, contractName, filename } = await req.json();
+    const { code, contractName, filename, previousFindings } = await req.json();
 
     if (!code || typeof code !== "string") {
       return NextResponse.json(
@@ -48,20 +87,24 @@ export async function POST(req: Request) {
       );
     }
 
-    // Generate a hash of the normalized code for caching
-    const normalizedCode = code.replace(/\s+/g, ' ').trim();
-    const codeHash = crypto.createHash('sha256').update(normalizedCode).digest('hex');
+    const isReanalysis = Array.isArray(previousFindings) && previousFindings.length > 0;
+    const additionalContext = isReanalysis
+      ? formatPreviousFindingsContext(previousFindings)
+      : '';
 
-    // Check cache first
+    const normalizedCode = code.replace(/\s+/g, ' ').trim();
+    const cacheInput = isReanalysis
+      ? normalizedCode + '::reanalysis'
+      : normalizedCode;
+    const codeHash = crypto.createHash('sha256').update(cacheInput).digest('hex');
+
     if (analysisCache.has(codeHash)) {
       console.log("Returning cached analysis result for hash:", codeHash);
       return NextResponse.json(analysisCache.get(codeHash));
     }
 
-    // Extract contract name
     const finalContractName = contractName || extractContractName(filename);
 
-    // Get AI provider configuration
     const providerConfig = getProviderConfig();
     if (!providerConfig) {
       return NextResponse.json(
@@ -73,13 +116,11 @@ export async function POST(req: Request) {
       );
     }
 
-    // Log provider and model selection
     console.log(`[AI Provider] Using ${providerConfig.provider.toUpperCase()} with model: ${providerConfig.model || 'default'}`);
-    console.log(`[Analysis] Contract: ${finalContractName}, Lines: ${code.split('\n').length}`);
+    console.log(`[Analysis] Contract: ${finalContractName}, Lines: ${code.split('\n').length}${isReanalysis ? `, Re-analysis with ${previousFindings.length} previous findings` : ''}`);
 
-    // Prompts
     const systemPrompt = SYSTEM_PROMPT;
-    const analysisPrompt = createAnalysisPrompt(code, finalContractName);
+    const analysisPrompt = createAnalysisPrompt(code, finalContractName, additionalContext);
 
     // Call AI provider
     let aiResponse: AnalysisResult;
