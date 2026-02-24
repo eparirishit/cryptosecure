@@ -825,8 +825,9 @@ export function CodeAnalyzer() {
       return;
     }
 
-    // Capture vulnerability findings before clearing state
+    // Capture vulnerability data before clearing state
     const capturedFindings = result?.findings || [];
+    const capturedVulnerabilityScore = result?.securityScore ?? null;
 
     setIsHacking(true);
     setHackerResult(null);
@@ -855,7 +856,8 @@ export function CodeAnalyzer() {
         body: JSON.stringify({
           code: currentCode,
           language: language,
-          originalVulnerabilities: capturedFindings
+          originalVulnerabilities: capturedFindings,
+          vulnerabilityScore: capturedVulnerabilityScore
         }),
       });
 

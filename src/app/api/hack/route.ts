@@ -44,50 +44,60 @@ function getClientIP(req: Request): string {
   return "unknown";
 }
 
-function calculateHackerResilienceScore(exploits: ExploitAttempt[]): number {
+function calculateVulnerabilityPenalty(findings: Finding[]): number {
+  let penalty = 0;
+  for (const finding of findings) {
+    switch (finding.severity as Severity) {
+      case "CRITICAL": penalty += 20; break;
+      case "HIGH":     penalty += 12; break;
+      case "MEDIUM":   penalty += 5;  break;
+      case "LOW":      penalty += 2;  break;
+      default:         break;
+    }
+  }
+  return penalty;
+}
+
+function calculateHackerResilienceScore(
+  exploits: ExploitAttempt[],
+  findings: Finding[] = [],
+  vulnerabilityScore: number | null = null
+): number {
   let score = 100;
-  
+
   for (const exploit of exploits) {
     if (exploit.status === "not-applicable") {
       continue; // Don't penalize for impossible exploits
     }
-    
-    // Base deduction based on status
+
     if (exploit.status === "plausible") {
-      // Plausible exploits are more serious
       switch (exploit.likelihood) {
-        case "high":
-          score -= 20;
-          break;
-        case "medium":
-          score -= 10;
-          break;
-        case "low":
-          score -= 5;
-          break;
+        case "high":   score -= 20; break;
+        case "medium": score -= 10; break;
+        case "low":    score -= 5;  break;
       }
-      
-      // Additional deduction based on severity
       switch (exploit.severity) {
-        case "Critical":
-          score -= 15;
-          break;
-        case "High":
-          score -= 10;
-          break;
-        case "Medium":
-          score -= 5;
-          break;
-        case "Low":
-          score -= 2;
-          break;
+        case "Critical": score -= 15; break;
+        case "High":     score -= 10; break;
+        case "Medium":   score -= 5;  break;
+        case "Low":      score -= 2;  break;
+        case "Info":     score -= 1;  break; // was missing — caused 0 severity penalty
       }
     } else if (exploit.status === "theoretical") {
-      // Theoretical exploits are less serious
       score -= 1;
     }
   }
-  
+
+  // Penalty from known static-analysis vulnerability findings
+  score -= calculateVulnerabilityPenalty(findings);
+
+  // If a vulnerability score exists from the standard audit, the resilience score
+  // cannot exceed it by more than 15 points — prevents contradictory readings
+  // (e.g. vulnerability score 35 but resilience score 90).
+  if (vulnerabilityScore !== null) {
+    score = Math.min(score, vulnerabilityScore + 15);
+  }
+
   return Math.max(0, Math.round(score));
 }
 
@@ -129,7 +139,7 @@ export async function POST(req: Request) {
       }
     }
     
-    const { code, language } = await req.json();
+    const { code, language, originalVulnerabilities = [], vulnerabilityScore = null } = await req.json();
     
     // Log request (without code content for privacy)
     console.log(`[Hacker Mode] Request from IP: ${clientIP}, Language: ${language}, Code length: ${code?.length || 0}`);
@@ -165,27 +175,29 @@ export async function POST(req: Request) {
     const attackSurface = await enumerateAttackSurface(code, language, provider);
     
     if (attackSurface.length === 0) {
+      const score = calculateHackerResilienceScore([], originalVulnerabilities, vulnerabilityScore);
       return NextResponse.json({
-        hackerResilienceScore: 100,
+        hackerResilienceScore: score,
         attackSurface: [],
         exploits: [],
         summary: "No attack surfaces identified. Contract appears to have minimal external interaction.",
         recommendations: [],
-        riskLevel: "None"
+        riskLevel: determineRiskLevel(score, 0)
       } as HackerModeResult);
     }
-    
+
     // Stage 2: Exploit Generation
     const rawExploits = await generateExploits(code, language, attackSurface, provider);
-    
+
     if (rawExploits.length === 0) {
+      const score = calculateHackerResilienceScore([], originalVulnerabilities, vulnerabilityScore);
       return NextResponse.json({
-        hackerResilienceScore: 90,
+        hackerResilienceScore: score,
         attackSurface,
         exploits: [],
         summary: "Attack surfaces identified, but no exploit strategies were generated. Contract may be well-protected.",
         recommendations: [],
-        riskLevel: "Low"
+        riskLevel: determineRiskLevel(score, 0)
       } as HackerModeResult);
     }
     
@@ -199,7 +211,7 @@ export async function POST(req: Request) {
     const recommendations = await generateDefenseRecommendations(code, plausibleExploits, provider);
     
     // Stage 5: Calculate Hacker Resilience Score
-    const hackerResilienceScore = calculateHackerResilienceScore(validatedExploits);
+    const hackerResilienceScore = calculateHackerResilienceScore(validatedExploits, originalVulnerabilities, vulnerabilityScore);
     const riskLevel = determineRiskLevel(hackerResilienceScore, plausibleExploits.length);
     
     // Generate summary
