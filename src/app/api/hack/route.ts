@@ -44,6 +44,27 @@ function getClientIP(req: Request): string {
   return "unknown";
 }
 
+/**
+ * Derives a synthetic vulnerability score from plausible exploits when no
+ * standard-audit score was passed in. Uses the same penalty weights as the
+ * standard audit engine so the two scores stay on the same scale.
+ * Returns null when there are no plausible exploits (nothing to base it on).
+ */
+function computeSyntheticVulnScore(plausibleExploits: ExploitAttempt[]): number | null {
+  if (plausibleExploits.length === 0) return null;
+  let score = 100;
+  for (const exploit of plausibleExploits) {
+    switch (exploit.severity) {
+      case "Critical": score -= 25; break;
+      case "High":     score -= 15; break;
+      case "Medium":   score -= 10; break;
+      case "Low":      score -= 5;  break;
+      default:         score -= 1;  break;
+    }
+  }
+  return Math.max(0, score);
+}
+
 function calculateVulnerabilityPenalty(findings: Finding[]): number {
   let penalty = 0;
   for (const finding of findings) {
@@ -211,7 +232,10 @@ export async function POST(req: Request) {
     const recommendations = await generateDefenseRecommendations(code, plausibleExploits, provider);
     
     // Stage 5: Calculate Hacker Resilience Score
-    const hackerResilienceScore = calculateHackerResilienceScore(validatedExploits, originalVulnerabilities, vulnerabilityScore);
+    // If no standard-audit score was passed, derive a synthetic one from the
+    // plausible exploits so the cap works even in standalone mode.
+    const effectiveVulnScore = vulnerabilityScore ?? computeSyntheticVulnScore(plausibleExploits);
+    const hackerResilienceScore = calculateHackerResilienceScore(validatedExploits, originalVulnerabilities, effectiveVulnScore);
     const riskLevel = determineRiskLevel(hackerResilienceScore, plausibleExploits.length);
     
     // Generate summary
