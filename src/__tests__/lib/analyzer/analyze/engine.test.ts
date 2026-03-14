@@ -106,4 +106,61 @@ describe("analyzeCodeStatic", () => {
     expect(result.patchedCode).toBeDefined();
     expect(typeof result.patchedCode).toBe("string");
   });
+
+  it("patched code fixes send_raw_message mode for vulnerable contract", () => {
+    const result = analyzeCodeStatic(VULNERABLE_CONTRACT);
+    expect(result.patchedCode).toContain("Auto-fixed");
+  });
+
+  it("removes TipJar vuln when auth is present alongside withdrawal", () => {
+    const authedTipJar = `() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {
+  slice cs = in_msg_full.begin_parse();
+  int flags = cs~load_uint(4);
+  if (flags & 1) { return (); }
+  slice sender_address = cs~load_msg_addr();
+  throw_unless(401, equal_slices(sender_address, owner_address));
+  int op = in_msg_body~load_uint(32);
+  if (op == 2) {
+    total_balance -= amount;
+    send_raw_message(msg, 64);
+  }
+}`;
+    const result = analyzeCodeStatic(authedTipJar);
+    const tipjarVuln = result.vulnerabilities.find(
+      (v) => v.title === "Potential Unprotected Withdrawal"
+    );
+    expect(tipjarVuln).toBeUndefined();
+  });
+
+  it("patched code inserts bounced check for missing bounce", () => {
+    const result = analyzeCodeStatic(VULNERABLE_CONTRACT);
+    expect(result.patchedCode).toContain("Auto-fixed bounced check");
+  });
+
+  it("patched code inserts auth check for TipJar vulnerability", () => {
+    const result = analyzeCodeStatic(TIPJAR_VULNERABLE);
+    expect(result.patchedCode).toContain("Auto-fixed security check");
+  });
+
+  it("assigns function name to vulnerability when pattern matches inside a function", () => {
+    const result = analyzeCodeStatic(VULNERABLE_CONTRACT);
+    const sendVuln = result.vulnerabilities.find(
+      (v) => v.title === "Unchecked Message Sending"
+    );
+    expect(sendVuln).toBeDefined();
+    expect(sendVuln!.function).toBe("recv_internal");
+  });
+
+  it("handles code with owner-related function names for inverted rules", () => {
+    const code = `() withdraw(int amount) impure {
+  send_raw_message(msg, 64);
+}`;
+    const result = analyzeCodeStatic(code);
+    const authVuln = result.vulnerabilities.find(
+      (v) => v.title === "Missing Owner Access Control"
+    );
+    if (authVuln) {
+      expect(authVuln.function).toBe("withdraw");
+    }
+  });
 });
