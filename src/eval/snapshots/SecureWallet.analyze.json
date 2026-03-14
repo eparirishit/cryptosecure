@@ -1,0 +1,212 @@
+{
+  "capturedAt": "2026-03-14T18:57:16.285Z",
+  "provider": "FunC",
+  "contractFile": "SecureWallet.fc",
+  "response": {
+    "analysisMetadata": {
+      "contractName": "SecureWallet",
+      "language": "FunC",
+      "linesOfCode": 77,
+      "analysisDate": "2025-01-10T00:00:00Z",
+      "analysisTimestamp": "2025-01-10T00:00:00Z",
+      "totalIssuesFound": 5
+    },
+    "securityScore": 60,
+    "grade": "C",
+    "executiveSummary": "The SecureWallet contract demonstrates good security practices in several areas including bounce handling, CEI pattern implementation, and signature verification. However, critical vulnerabilities exist: user-controlled amount in store_coins() (line 42), missing storage persistence for global variables, lack of initialization function, and missing gas validation. The contract follows proper reentrancy prevention but fails to persist state changes, making it non-functional in production.",
+    "findingsSummary": {
+      "critical": 2,
+      "high": 1,
+      "medium": 1,
+      "low": 1,
+      "informational": 0,
+      "totalFindings": 5
+    },
+    "findings": [
+      {
+        "id": "CRIT-001",
+        "severity": "CRITICAL",
+        "category": "User Input Misuse",
+        "title": "User-Controlled Amount in store_coins() Allows Arbitrary Fund Extraction",
+        "description": "In the withdraw operation (op == 2), the amount loaded from user input is directly used in store_coins() at line 42. While there are balance checks, an attacker can still manipulate the message to extract funds by controlling the amount parameter. This violates the fundamental security principle that user input should never directly control fund transfers in TON messages.",
+        "impact": "An attacker can craft malicious withdraw messages to extract funds. Even with balance validation, the direct use of user input in store_coins() creates a critical attack surface. This could lead to complete drainage of contract funds through carefully crafted messages.",
+        "recommendation": "Remove user-controlled amount from store_coins(). Instead, use a validated constant or implement a whitelist of allowed withdrawal amounts. The amount should be validated and then a separate constant should be used in the actual message construction.",
+        "codeChanges": {
+          "vulnerableCode": "    if (op == 2) { ;; withdraw\n        int amount = in_msg_body~load_coins();\n        \n        ;; CHECKS: Validate request\n        throw_unless(401, amount > 0);\n        throw_unless(402, amount <= balance);\n        \n        ;; EFFECTS: Update state FIRST\n        balance -= amount;\n        \n        ;; INTERACTIONS: External call LAST\n        send_raw_message(begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(sender)\n            .store_coins(amount)\n            .store_uint(0, 107)\n        .end_cell(), 1);\n    }",
+          "fixedCode": "    if (op == 2) { ;; withdraw\n        int requested_amount = in_msg_body~load_coins();\n        \n        ;; CHECKS: Validate request\n        throw_unless(401, requested_amount > 0);\n        throw_unless(402, requested_amount <= balance);\n        throw_unless(405, requested_amount <= 1000000000); ;; Max 1 TON per withdrawal\n        \n        ;; EFFECTS: Update state FIRST\n        balance -= requested_amount;\n        \n        ;; INTERACTIONS: External call with validated constant in payload\n        var msg = begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(sender)\n            .store_coins(0) ;; No value in message itself\n            .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)\n            .store_ref(begin_cell()\n                .store_uint(0, 32)\n                .store_coins(requested_amount) ;; Amount in payload only\n            .end_cell())\n        .end_cell();\n        send_raw_message(msg, 64); ;; Send with separate value handling",
+          "startLine": 28,
+          "endLine": 45,
+          "changeDescription": "Removed user-controlled amount from store_coins() in message value field. Added maximum withdrawal limit validation. Moved amount to message payload instead of message value. Changed to use mode 64 for proper fund handling. This prevents attackers from controlling the message value field directly.",
+          "function": "recv_internal"
+        }
+      },
+      {
+        "id": "CRIT-002",
+        "severity": "CRITICAL",
+        "category": "State Persistence",
+        "title": "Global Variables Not Persisted to Storage",
+        "description": "The contract declares global variables 'balance' and 'owner_pubkey' but never loads them from storage at the start of recv_internal/recv_external, nor saves them at the end. In TON, global variables are ephemeral per transaction. Without load_data() and save_data() calls, all state changes are lost after each transaction, making the contract completely non-functional.",
+        "impact": "All state changes (balance updates, owner changes) are lost after each transaction. The contract cannot maintain any persistent state, making it completely unusable in production. Deposits will be lost, withdrawals will fail, and ownership cannot be established.",
+        "recommendation": "Implement proper storage persistence by loading state at the beginning of each handler and saving at the end. Use load_data() to read from c4 register and save_data() to persist changes.",
+        "codeChanges": {
+          "vulnerableCode": "global int balance;\nglobal int owner_pubkey;\n\n() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);",
+          "fixedCode": "global int balance;\nglobal int owner_pubkey;\n\n() load_data() impure inline {\n    slice ds = get_data().begin_parse();\n    balance = ds~load_coins();\n    owner_pubkey = ds~load_uint(256);\n}\n\n() save_data() impure inline {\n    set_data(begin_cell()\n        .store_coins(balance)\n        .store_uint(owner_pubkey, 256)\n    .end_cell());\n}\n\n() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    load_data(); ;; Load state at start\n    \n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);",
+          "startLine": 5,
+          "endLine": 10,
+          "changeDescription": "Added load_data() and save_data() helper functions to properly persist global state. Added load_data() call at the start of recv_internal to load persistent state from storage (c4 register). Must also add save_data() calls before all return statements to persist changes.",
+          "function": "recv_internal"
+        }
+      },
+      {
+        "id": "HIGH-001",
+        "severity": "HIGH",
+        "category": "Initialization",
+        "title": "Missing Contract Initialization Function",
+        "description": "The contract has no initialization mechanism to set the initial owner_pubkey. Without an init function or constructor, the owner_pubkey remains uninitialized (0), making the contract impossible to control via recv_external. The first external message will fail signature verification.",
+        "impact": "The contract cannot be properly initialized with an owner. All external messages will fail signature verification since owner_pubkey is 0. The admin function (op == 3) becomes inaccessible, and the contract cannot be managed.",
+        "recommendation": "Add a proper initialization function that sets the owner_pubkey during deployment. This should be called once during contract deployment to establish ownership.",
+        "codeChanges": {
+          "vulnerableCode": "global int balance;\nglobal int owner_pubkey;",
+          "fixedCode": "global int balance;\nglobal int owner_pubkey;\n\n() init(int initial_owner_pubkey) impure {\n    balance = 0;\n    owner_pubkey = initial_owner_pubkey;\n    save_data();\n}",
+          "startLine": 5,
+          "endLine": 6,
+          "changeDescription": "Added init() function to properly initialize the contract with an owner public key. This function should be called during contract deployment to set the initial owner_pubkey, making the contract manageable via external messages.",
+          "function": "N/A"
+        }
+      },
+      {
+        "id": "MED-001",
+        "severity": "MEDIUM",
+        "category": "Gas Management",
+        "title": "Missing Gas Validation and Reserve",
+        "description": "The contract does not validate incoming gas or reserve gas for computation. In recv_internal, there's no check that msg_value covers gas costs. In recv_external, there's no raw_reserve() call after accept_message() to ensure sufficient gas for execution.",
+        "impact": "Transactions may fail due to insufficient gas. In recv_external, accepting a message without reserving gas could lead to failed operations after gas is consumed. This could result in state inconsistencies or failed withdrawals.",
+        "recommendation": "Add gas validation in recv_internal to ensure msg_value covers minimum gas costs. In recv_external, add raw_reserve() after accept_message() to reserve sufficient gas for execution.",
+        "codeChanges": {
+          "vulnerableCode": "() recv_external(slice in_msg) impure {\n    ;; Proper signature verification\n    slice signature = in_msg~load_bits(512);\n    slice cs = in_msg;\n    int msg_hash = slice_hash(cs);\n    \n    ;; Verify signature matches owner\n    throw_unless(403, check_signature(msg_hash, signature, owner_pubkey));\n    \n    ;; Now safe to accept\n    accept_message();",
+          "fixedCode": "() recv_external(slice in_msg) impure {\n    load_data(); ;; Load state\n    \n    ;; Proper signature verification\n    slice signature = in_msg~load_bits(512);\n    slice cs = in_msg;\n    int msg_hash = slice_hash(cs);\n    \n    ;; Verify signature matches owner\n    throw_unless(403, check_signature(msg_hash, signature, owner_pubkey));\n    \n    ;; Now safe to accept\n    accept_message();\n    \n    ;; Reserve gas for execution\n    raw_reserve(10000000, 0); ;; Reserve 0.01 TON for gas",
+          "startLine": 56,
+          "endLine": 66,
+          "changeDescription": "Added load_data() call at the start of recv_external to load state. Added raw_reserve() after accept_message() to reserve sufficient gas (0.01 TON) for execution. This ensures the contract has enough gas to complete operations after accepting the external message.",
+          "function": "recv_external"
+        }
+      },
+      {
+        "id": "LOW-001",
+        "severity": "LOW",
+        "category": "Error Handling",
+        "title": "Missing save_data() Calls Before Returns",
+        "description": "The contract updates global state (balance, owner_pubkey) but doesn't consistently call save_data() before returning. Specifically, after handling bounced messages in on_bounce() and after updating owner_pubkey in recv_external, there are no save_data() calls to persist the changes.",
+        "impact": "State changes in on_bounce() and recv_external admin function will not be persisted. Balance restoration after bounced withdrawals will be lost, and owner changes will not take effect. This leads to state inconsistency.",
+        "recommendation": "Add save_data() calls before all return statements and at the end of all state-modifying functions to ensure state persistence.",
+        "codeChanges": {
+          "vulnerableCode": "() on_bounce(slice in_msg_body) impure {\n    ;; Handle bounced messages\n    int op = in_msg_body~load_uint(32);\n    if (op == 2) { ;; withdraw bounced\n        int amount = in_msg_body~load_coins();\n        balance += amount; ;; Restore balance\n    }\n}",
+          "fixedCode": "() on_bounce(slice in_msg_body) impure {\n    load_data(); ;; Load current state\n    \n    ;; Handle bounced messages\n    int op = in_msg_body~load_uint(32);\n    if (op == 2) { ;; withdraw bounced\n        int amount = in_msg_body~load_coins();\n        balance += amount; ;; Restore balance\n    }\n    \n    save_data(); ;; Persist changes\n}",
+          "startLine": 48,
+          "endLine": 54,
+          "changeDescription": "Added load_data() at the start of on_bounce() to load current state and save_data() at the end to persist balance restoration. This ensures bounced withdrawal handling properly updates persistent storage.",
+          "function": "on_bounce"
+        }
+      }
+    ],
+    "completeCodeComparison": {
+      "hasChanges": true,
+      "original": ";; Secure TON wallet with proper security measures\n\n#include \"stdlib.fc\";\n\nglobal int balance;\nglobal int owner_pubkey;\n\n() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    \n    ;; Check for bounced messages\n    if (flags & 1) {\n        on_bounce(in_msg_body);\n        return ();\n    }\n    \n    slice sender = cs~load_msg_addr();\n    int op = in_msg_body~load_uint(32);\n    \n    if (op == 1) { ;; deposit\n        ;; Validate amount\n        throw_unless(400, msg_value > 0);\n        balance += msg_value;\n    }\n    \n    if (op == 2) { ;; withdraw\n        int amount = in_msg_body~load_coins();\n        \n        ;; CHECKS: Validate request\n        throw_unless(401, amount > 0);\n        throw_unless(402, amount <= balance);\n        \n        ;; EFFECTS: Update state FIRST\n        balance -= amount;\n        \n        ;; INTERACTIONS: External call LAST\n        send_raw_message(begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(sender)\n            .store_coins(amount)\n            .store_uint(0, 107)\n        .end_cell(), 1);\n    }\n}\n\n() on_bounce(slice in_msg_body) impure {\n    ;; Handle bounced messages\n    int op = in_msg_body~load_uint(32);\n    if (op == 2) { ;; withdraw bounced\n        int amount = in_msg_body~load_coins();\n        balance += amount; ;; Restore balance\n    }\n}\n\n() recv_external(slice in_msg) impure {\n    ;; Proper signature verification\n    slice signature = in_msg~load_bits(512);\n    slice cs = in_msg;\n    int msg_hash = slice_hash(cs);\n    \n    ;; Verify signature matches owner\n    throw_unless(403, check_signature(msg_hash, signature, owner_pubkey));\n    \n    ;; Now safe to accept\n    accept_message();\n    \n    int op = cs~load_uint(32);\n    if (op == 3) { ;; admin function\n        int new_owner_pubkey = cs~load_uint(256);\n        owner_pubkey = new_owner_pubkey;\n    }\n}\n\nint get_balance() method_id {\n    return balance;\n}",
+      "corrected": ";; Secure TON wallet with proper security measures\n\n#include \"stdlib.fc\";\n\nglobal int balance;\nglobal int owner_pubkey;\n\n() load_data() impure inline {\n    slice ds = get_data().begin_parse();\n    balance = ds~load_coins();\n    owner_pubkey = ds~load_uint(256);\n}\n\n() save_data() impure inline {\n    set_data(begin_cell()\n        .store_coins(balance)\n        .store_uint(owner_pubkey, 256)\n    .end_cell());\n}\n\n() init(int initial_owner_pubkey) impure {\n    balance = 0;\n    owner_pubkey = initial_owner_pubkey;\n    save_data();\n}\n\n() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    load_data(); ;; Load state at start\n    \n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    \n    ;; Check for bounced messages\n    if (flags & 1) {\n        on_bounce(in_msg_body);\n        return ();\n    }\n    \n    slice sender = cs~load_msg_addr();\n    int op = in_msg_body~load_uint(32);\n    \n    if (op == 1) { ;; deposit\n        ;; Validate amount\n        throw_unless(400, msg_value > 0);\n        balance += msg_value;\n        save_data(); ;; Persist state\n    }\n    \n    if (op == 2) { ;; withdraw\n        int requested_amount = in_msg_body~load_coins();\n        \n        ;; CHECKS: Validate request\n        throw_unless(401, requested_amount > 0);\n        throw_unless(402, requested_amount <= balance);\n        throw_unless(405, requested_amount <= 1000000000); ;; Max 1 TON per withdrawal\n        \n        ;; EFFECTS: Update state FIRST\n        balance -= requested_amount;\n        save_data(); ;; Persist state before external call\n        \n        ;; INTERACTIONS: External call with validated constant in payload\n        var msg = begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(sender)\n            .store_coins(0) ;; No value in message itself\n            .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)\n            .store_ref(begin_cell()\n                .store_uint(0, 32)\n                .store_coins(requested_amount) ;; Amount in payload only\n            .end_cell())\n        .end_cell();\n        send_raw_message(msg, 64); ;; Send with separate value handling\n    }\n}\n\n() on_bounce(slice in_msg_body) impure {\n    load_data(); ;; Load current state\n    \n    ;; Handle bounced messages\n    int op = in_msg_body~load_uint(32);\n    if (op == 2) { ;; withdraw bounced\n        int amount = in_msg_body~load_coins();\n        balance += amount; ;; Restore balance\n    }\n    \n    save_data(); ;; Persist changes\n}\n\n() recv_external(slice in_msg) impure {\n    load_data(); ;; Load state\n    \n    ;; Proper signature verification\n    slice signature = in_msg~load_bits(512);\n    slice cs = in_msg;\n    int msg_hash = slice_hash(cs);\n    \n    ;; Verify signature matches owner\n    throw_unless(403, check_signature(msg_hash, signature, owner_pubkey));\n    \n    ;; Now safe to accept\n    accept_message();\n    \n    ;; Reserve gas for execution\n    raw_reserve(10000000, 0); ;; Reserve 0.01 TON for gas\n    \n    int op = cs~load_uint(32);\n    if (op == 3) { ;; admin function\n        int new_owner_pubkey = cs~load_uint(256);\n        owner_pubkey = new_owner_pubkey;\n        save_data(); ;; Persist owner change\n    }\n}\n\nint get_balance() method_id {\n    load_data(); ;; Load state for getter\n    return balance;\n}",
+      "changesExplanation": "Applied all critical and high severity fixes: (1) Removed user-controlled amount from store_coins() in withdraw operation, moved amount to payload, added maximum withdrawal limit, and changed to mode 64 for proper fund handling. (2) Added load_data() and save_data() functions to properly persist global state to storage (c4 register). (3) Added init() function for proper contract initialization with owner public key. (4) Added load_data() calls at the start of all handlers and save_data() calls before returns to ensure state persistence. (5) Added raw_reserve() in recv_external after accept_message() to reserve gas for execution. (6) Added load_data() to get_balance() getter method. The corrected code now properly handles state persistence, eliminates user-controlled fund transfers, and includes proper initialization."
+    },
+    "recommendations": [
+      {
+        "priority": "High",
+        "title": "Implement Proper Deployment Script",
+        "description": "Create a deployment script that calls the init() function with the correct owner public key during contract deployment. Ensure the contract is properly initialized before any operations.",
+        "rationale": "Without proper initialization, the contract cannot be managed or controlled. The deployment process must establish ownership from the start."
+      },
+      {
+        "priority": "High",
+        "title": "Add Withdrawal Limits and Rate Limiting",
+        "description": "Implement additional withdrawal limits such as daily/hourly caps and rate limiting to prevent rapid fund drainage even with valid signatures.",
+        "rationale": "Defense in depth: even with proper access control, additional limits provide protection against compromised keys or malicious insiders."
+      },
+      {
+        "priority": "Medium",
+        "title": "Implement Emergency Pause Mechanism",
+        "description": "Add an emergency pause function that can temporarily disable withdrawals in case of detected attacks or anomalies. Include a time-lock for unpausing.",
+        "rationale": "Provides a safety mechanism to stop ongoing attacks while maintaining eventual recovery capability."
+      },
+      {
+        "priority": "Medium",
+        "title": "Add Event Logging",
+        "description": "Implement proper event emission for deposits, withdrawals, owner changes, and bounced messages to enable off-chain monitoring and auditing.",
+        "rationale": "Transparency and monitoring are essential for detecting anomalies and maintaining trust in the contract's operations."
+      },
+      {
+        "priority": "Low",
+        "title": "Consider Multi-Signature for Owner Changes",
+        "description": "For production use, consider implementing multi-signature requirements for critical operations like owner changes to prevent single point of failure.",
+        "rationale": "Reduces risk of complete contract takeover if a single private key is compromised."
+      }
+    ],
+    "gasOptimizations": [
+      {
+        "location": "Lines 8-18 (load_data and save_data functions)",
+        "description": "The load_data() and save_data() functions are marked as inline, which is optimal. Consider caching loaded data in local variables if accessed multiple times within a function to avoid repeated slice parsing.",
+        "estimatedGasSavings": "Minor (5-10% in functions with multiple state accesses)"
+      },
+      {
+        "location": "Lines 42-48 (recv_internal deposit and withdraw operations)",
+        "description": "Consider combining multiple conditional checks into single throw_unless statements where logical AND is appropriate to reduce instruction count.",
+        "estimatedGasSavings": "Minor (2-5% per transaction)"
+      },
+      {
+        "location": "Lines 76-79 (on_bounce function)",
+        "description": "The on_bounce function loads and saves data even if the operation is not 2. Consider adding early return before load_data() if op check fails to save gas on non-withdraw bounces.",
+        "estimatedGasSavings": "Moderate (10-15% on non-withdraw bounces)"
+      }
+    ],
+    "codeQualityObservations": [
+      {
+        "description": "The contract demonstrates good understanding of the Checks-Effects-Interactions (CEI) pattern, updating state before external calls in the withdraw function."
+      },
+      {
+        "description": "Bounce handling is properly implemented with a dedicated handler function, showing awareness of TON's async message model."
+      },
+      {
+        "description": "Signature verification in recv_external follows best practices by verifying before accepting the message."
+      },
+      {
+        "description": "Code comments are clear and helpful, particularly the CEI pattern annotations in the withdraw function."
+      },
+      {
+        "description": "The contract structure is clean and well-organized with separate handlers for internal, external, and bounce messages."
+      },
+      {
+        "description": "Error codes are consistently used (400-405 range) for different validation failures, which aids in debugging."
+      }
+    ],
+    "positiveFindings": [
+      {
+        "aspect": "Reentrancy Protection",
+        "description": "The contract properly implements the Checks-Effects-Interactions pattern in the withdraw function, updating balance before sending the message. This prevents reentrancy attacks."
+      },
+      {
+        "aspect": "Bounce Handling",
+        "description": "The contract includes proper bounce message handling with a dedicated on_bounce() function that restores balance on failed withdrawals. The bounce flag check (flags & 1) is correctly implemented."
+      },
+      {
+        "aspect": "Signature Verification",
+        "description": "External messages are properly protected with signature verification before accept_message(), preventing unauthorized access to admin functions."
+      },
+      {
+        "aspect": "Input Validation",
+        "description": "The contract includes validation checks for amounts (> 0, <= balance) before processing withdrawals, showing awareness of input validation requirements."
+      },
+      {
+        "aspect": "Code Organization",
+        "description": "The contract is well-structured with clear separation of concerns between internal messages, external messages, and bounce handling."
+      }
+    ],
+    "nextSteps": "1. CRITICAL: Apply all fixes from the corrected code, particularly the storage persistence and user input removal from store_coins(). 2. Implement proper deployment with init() function call. 3. Add comprehensive testing for all operations including bounce scenarios. 4. Consider implementing additional security measures like withdrawal limits and emergency pause. 5. Add event logging for monitoring. 6. Conduct thorough testing on testnet before mainnet deployment. 7. Consider professional third-party audit for production use.",
+    "proposedCodeComplete": ";; Secure TON wallet with proper security measures\n\n#include \"stdlib.fc\";\n\nglobal int balance;\nglobal int owner_pubkey;\n\n() load_data() impure inline {\n    slice ds = get_data().begin_parse();\n    balance = ds~load_coins();\n    owner_pubkey = ds~load_uint(256);\n}\n\n() save_data() impure inline {\n    set_data(begin_cell()\n        .store_coins(balance)\n        .store_uint(owner_pubkey, 256)\n    .end_cell());\n}\n\n() init(int initial_owner_pubkey) impure {\n    balance = 0;\n    owner_pubkey = initial_owner_pubkey;\n    save_data();\n}\n\n() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    load_data(); ;; Load state at start\n    \n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    \n    ;; Check for bounced messages\n    if (flags & 1) {\n        on_bounce(in_msg_body);\n        return ();\n    }\n    \n    slice sender = cs~load_msg_addr();\n    int op = in_msg_body~load_uint(32);\n    \n    if (op == 1) { ;; deposit\n        ;; Validate amount\n        throw_unless(400, msg_value > 0);\n        balance += msg_value;\n        save_data(); ;; Persist state\n    }\n    \n    if (op == 2) { ;; withdraw\n        int requested_amount = in_msg_body~load_coins();\n        \n        ;; CHECKS: Validate request\n        throw_unless(401, requested_amount > 0);\n        throw_unless(402, requested_amount <= balance);\n        throw_unless(405, requested_amount <= 1000000000); ;; Max 1 TON per withdrawal\n        \n        ;; EFFECTS: Update state FIRST\n        balance -= requested_amount;\n        save_data(); ;; Persist state before external call\n        \n        ;; INTERACTIONS: External call with validated constant in payload\n        var msg = begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(sender)\n            .store_coins(0) ;; No value in message itself\n            .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)\n            .store_ref(begin_cell()\n                .store_uint(0, 32)\n                .store_coins(requested_amount) ;; Amount in payload only\n            .end_cell())\n        .end_cell();\n        send_raw_message(msg, 64); ;; Send with separate value handling\n    }\n}\n\n() on_bounce(slice in_msg_body) impure {\n    load_data(); ;; Load current state\n    \n    ;; Handle bounced messages\n    int op = in_msg_body~load_uint(32);\n    if (op == 2) { ;; withdraw bounced\n        int amount = in_msg_body~load_coins();\n        balance += amount; ;; Restore balance\n    }\n    \n    save_data(); ;; Persist changes\n}\n\n() recv_external(slice in_msg) impure {\n    load_data(); ;; Load state\n    \n    ;; Proper signature verification\n    slice signature = in_msg~load_bits(512);\n    slice cs = in_msg;\n    int msg_hash = slice_hash(cs);\n    \n    ;; Verify signature matches owner\n    throw_unless(403, check_signature(msg_hash, signature, owner_pubkey));\n    \n    ;; Now safe to accept\n    accept_message();\n    \n    ;; Reserve gas for execution\n    raw_reserve(10000000, 0); ;; Reserve 0.01 TON for gas\n    \n    int op = cs~load_uint(32);\n    if (op == 3) { ;; admin function\n        int new_owner_pubkey = cs~load_uint(256);\n        owner_pubkey = new_owner_pubkey;\n        save_data(); ;; Persist owner change\n    }\n}\n\nint get_balance() method_id {\n    load_data(); ;; Load state for getter\n    return balance;\n}"
+  }
+}

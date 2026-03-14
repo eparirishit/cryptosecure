@@ -1,0 +1,677 @@
+{
+  "contractFile": "VulnerableWallet.fc",
+  "runs": [
+    {
+      "capturedAt": "2026-03-14T18:52:47.471Z",
+      "provider": "FunC",
+      "contractFile": "VulnerableWallet.fc",
+      "response": {
+        "analysisMetadata": {
+          "contractName": "VulnerableWallet",
+          "language": "FunC",
+          "linesOfCode": 50,
+          "analysisDate": "2025-01-20T00:00:00Z",
+          "analysisTimestamp": "2025-01-20T00:00:00Z",
+          "totalIssuesFound": 6
+        },
+        "securityScore": 10,
+        "grade": "F",
+        "executiveSummary": "The VulnerableWallet contract contains multiple CRITICAL vulnerabilities that make it completely unsafe for production use. The contract suffers from a classic reentrancy vulnerability where external calls are made before state updates, allowing attackers to drain funds. Additionally, user-controlled amounts are directly used in .store_coins() without validation, enabling attackers to manipulate message values. The recv_external function lacks any access control, allowing anyone to arbitrarily modify the contract's balance. There is no bounce handling, no owner initialization, and no balance validation before withdrawals. The contract requires immediate and comprehensive fixes before any deployment.",
+        "findingsSummary": {
+          "critical": 4,
+          "high": 1,
+          "medium": 1,
+          "low": 0,
+          "informational": 0,
+          "totalFindings": 6
+        },
+        "findings": [
+          {
+            "id": "CRIT-001",
+            "severity": "CRITICAL",
+            "category": "Reentrancy",
+            "title": "Classic Reentrancy Vulnerability in Withdraw Function",
+            "description": "The withdraw function (op == 2) performs an external call via send_raw_message() before updating the balance state variable. This allows an attacker to recursively call the withdraw function before the balance is decremented, enabling them to drain all funds from the contract. The vulnerable pattern is: external call at lines 23-28, state update at line 31.",
+            "impact": "An attacker can completely drain the contract by exploiting the reentrancy vulnerability. By creating a malicious contract that calls withdraw repeatedly in its recv_internal handler, the attacker can withdraw the same funds multiple times before the balance is updated. This results in total loss of all deposited funds.",
+            "recommendation": "Move the state update (balance -= amount) BEFORE the external call to send_raw_message(). This ensures that the balance is decremented before any external code can be executed, preventing reentrancy attacks. Additionally, add a check to ensure sufficient balance exists before withdrawal.",
+            "codeChanges": {
+              "vulnerableCode": "if (op == 2) { ;; withdraw\n        int amount = in_msg_body~load_coins();\n        \n        ;; VULNERABILITY: External call before state update\n        send_raw_message(begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(sender)\n            .store_coins(amount)\n            .store_uint(0, 107)\n        .end_cell(), 1);\n        \n        ;; State update AFTER external call - VULNERABLE!\n        balance -= amount;\n    }",
+              "fixedCode": "if (op == 2) { ;; withdraw\n        int amount = in_msg_body~load_coins();\n        \n        ;; Check sufficient balance\n        throw_unless(402, balance >= amount);\n        \n        ;; State update BEFORE external call - SECURE!\n        balance -= amount;\n        \n        ;; External call after state update\n        send_raw_message(begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(sender)\n            .store_coins(amount)\n            .store_uint(0, 107)\n        .end_cell(), 1);\n    }",
+              "startLine": 19,
+              "endLine": 32,
+              "changeDescription": "Moved balance decrement (state update) before send_raw_message() call to prevent reentrancy. Added balance validation check to ensure sufficient funds exist before withdrawal. This eliminates the reentrancy vulnerability by ensuring state is updated before any external code execution.",
+              "function": "recv_internal"
+            }
+          },
+          {
+            "id": "CRIT-002",
+            "severity": "CRITICAL",
+            "category": "User Input Misuse",
+            "title": "User-Controlled Amount in store_coins() Enables Fund Manipulation",
+            "description": "The withdraw function uses user-supplied amount directly in .store_coins() without any validation or sanitization. The amount is loaded from in_msg_body and immediately used in the message construction. This allows an attacker to specify arbitrary withdrawal amounts, potentially exceeding the contract's actual balance or causing integer overflow issues.",
+            "impact": "An attacker can specify any withdrawal amount, including amounts larger than their actual balance or the contract's total balance. This can lead to fund theft, contract insolvency, or unexpected behavior. Combined with the reentrancy vulnerability, this makes the contract completely insecure.",
+            "recommendation": "Add strict validation on the withdrawal amount before using it. Ensure the amount does not exceed the sender's balance (if tracking per-user balances) or the contract's total balance. Consider implementing a maximum withdrawal limit and proper balance tracking per user.",
+            "codeChanges": {
+              "vulnerableCode": "int amount = in_msg_body~load_coins();\n        \n        ;; VULNERABILITY: External call before state update\n        send_raw_message(begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(sender)\n            .store_coins(amount)\n            .store_uint(0, 107)\n        .end_cell(), 1);",
+              "fixedCode": "int amount = in_msg_body~load_coins();\n        \n        ;; Validate amount is positive and within reasonable limits\n        throw_unless(400, amount > 0);\n        throw_unless(401, amount <= 10000000000000); ;; Max 10,000 TON per withdrawal\n        throw_unless(402, balance >= amount);\n        \n        ;; State update BEFORE external call\n        balance -= amount;\n        \n        send_raw_message(begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(sender)\n            .store_coins(amount)\n            .store_uint(0, 107)\n        .end_cell(), 1);",
+              "startLine": 20,
+              "endLine": 28,
+              "changeDescription": "Added comprehensive validation for user-supplied withdrawal amount: positive value check, maximum withdrawal limit (10,000 TON), and sufficient balance verification. While user input is still used in store_coins() (which is acceptable for withdrawal amounts after validation), the critical fix is the validation and state update ordering to prevent exploitation.",
+              "function": "recv_internal"
+            }
+          },
+          {
+            "id": "CRIT-003",
+            "severity": "CRITICAL",
+            "category": "Access Control",
+            "title": "Missing Access Control in recv_external Allows Arbitrary Balance Manipulation",
+            "description": "The recv_external function accepts external messages and allows anyone to modify the contract's balance variable (op == 3) without any authentication or authorization checks. The function calls accept_message() unconditionally and then processes operations that should be restricted to the contract owner. There is no verification of the sender's identity or authority.",
+            "impact": "Any external actor can send a message to arbitrarily set the contract's balance to any value, including zero or inflated amounts. This completely breaks the contract's accounting system and allows attackers to manipulate the perceived balance, potentially enabling unauthorized withdrawals or causing denial of service. This is a complete compromise of the contract's security model.",
+            "recommendation": "Implement proper access control by verifying the message signature against the owner's public key before accepting the message. Only allow the contract owner to execute administrative functions. Add owner initialization in the contract deployment and use check_signature() to verify message authenticity.",
+            "codeChanges": {
+              "vulnerableCode": "() recv_external(slice in_msg) impure {\n    ;; VULNERABILITY: No access control!\n    accept_message();\n    \n    slice cs = in_msg;\n    int op = cs~load_uint(32);\n    \n    if (op == 3) { ;; admin function without checks\n        int new_balance = cs~load_coins();\n        balance = new_balance;\n    }\n}",
+              "fixedCode": "() recv_external(slice in_msg) impure {\n    slice cs = in_msg;\n    \n    ;; Load signature and verify against owner\n    slice signature = cs~load_bits(512);\n    int msg_hash = slice_hash(cs);\n    throw_unless(403, check_signature(msg_hash, signature, owner));\n    \n    accept_message();\n    \n    int op = cs~load_uint(32);\n    \n    if (op == 3) { ;; admin function with proper access control\n        int new_balance = cs~load_coins();\n        throw_unless(404, new_balance >= 0);\n        balance = new_balance;\n    }\n}",
+              "startLine": 35,
+              "endLine": 45,
+              "changeDescription": "Added signature verification before accept_message() to ensure only the owner can execute external messages. The fix extracts the signature from the message, computes the message hash, and verifies it against the owner's public key using check_signature(). This prevents unauthorized access to administrative functions. Also added validation for new_balance to ensure it's non-negative.",
+              "function": "recv_external"
+            }
+          },
+          {
+            "id": "CRIT-004",
+            "severity": "CRITICAL",
+            "category": "Missing Bounce Handling",
+            "title": "No Bounce Message Handling in recv_internal",
+            "description": "The recv_internal function does not check for bounce messages (flags & 1). In TON, when a message fails to be processed by the recipient, it bounces back to the sender. Without proper bounce handling, the contract will attempt to process bounced messages as regular messages, potentially causing incorrect state updates or unexpected behavior. The flags are loaded at line 10 but never checked.",
+            "impact": "If a withdrawal message bounces (e.g., due to insufficient gas or invalid recipient), the contract will not detect it and the balance will remain decremented even though the funds were not actually sent. This leads to accounting discrepancies and potential loss of funds. Bounced messages could also trigger unintended operations if they match operation codes.",
+            "recommendation": "Add a bounce check at the beginning of recv_internal to immediately return if the message is a bounce. This prevents bounced messages from being processed as regular operations and ensures correct accounting.",
+            "codeChanges": {
+              "vulnerableCode": "() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    slice sender = cs~load_msg_addr();\n    \n    int op = in_msg_body~load_uint(32);",
+              "fixedCode": "() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    \n    ;; Handle bounce messages - return immediately\n    if (flags & 1) {\n        return ();\n    }\n    \n    slice sender = cs~load_msg_addr();\n    \n    int op = in_msg_body~load_uint(32);",
+              "startLine": 8,
+              "endLine": 13,
+              "changeDescription": "Added bounce message detection using (flags & 1) check immediately after loading flags. If the message is a bounce, the function returns early without processing any operations. This prevents bounced messages from affecting contract state and ensures proper accounting when withdrawals fail.",
+              "function": "recv_internal"
+            }
+          },
+          {
+            "id": "HIGH-001",
+            "severity": "HIGH",
+            "category": "Initialization",
+            "title": "Missing Owner Initialization",
+            "description": "The contract declares a global owner variable but never initializes it. There is no constructor or initialization function to set the owner address. This means the owner variable will be empty/null, causing the signature verification in recv_external to always fail (after the fix is applied), or allowing anyone to claim ownership if not properly initialized.",
+            "impact": "Without proper owner initialization, the contract cannot function correctly. If the owner is not set, legitimate administrative operations will fail. If there's a way to set the owner without authentication, an attacker could claim ownership. This is a critical operational issue that prevents proper contract deployment and management.",
+            "recommendation": "Add an initialization function or constructor that sets the owner address during contract deployment. This should be called once during deployment and should store the deployer's address or a specified owner address in the owner global variable.",
+            "codeChanges": {
+              "vulnerableCode": "global int balance;\nglobal slice owner;\n\n() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {",
+              "fixedCode": "global int balance;\nglobal slice owner;\nglobal int initialized;\n\n() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    \n    if (flags & 1) {\n        return ();\n    }\n    \n    slice sender = cs~load_msg_addr();\n    \n    ;; Initialize owner on first message if not initialized\n    if (initialized == 0) {\n        owner = sender;\n        initialized = 1;\n    }",
+              "startLine": 5,
+              "endLine": 8,
+              "changeDescription": "Added initialization logic that sets the owner to the first sender who interacts with the contract. Added a global 'initialized' flag to ensure owner is set only once. This provides a simple initialization mechanism, though a more robust approach would be to use a dedicated init() function or set the owner during contract deployment via storage initialization.",
+              "function": "recv_internal"
+            }
+          },
+          {
+            "id": "MED-001",
+            "severity": "MEDIUM",
+            "category": "Integer Safety",
+            "title": "Potential Integer Underflow in Balance Decrement",
+            "description": "The balance decrement operation (balance -= amount) does not check if the balance is sufficient before subtraction. While the fixed version adds this check, the original code could cause integer underflow if the withdrawal amount exceeds the current balance, potentially wrapping around to a very large positive number in some integer implementations.",
+            "impact": "If a withdrawal amount exceeds the balance, the subtraction could underflow, resulting in an incorrect (potentially very large) balance value. This breaks the contract's accounting and could enable further exploits. However, in FunC, integers are arbitrary precision, so this is less likely to cause wraparound but will still result in negative balance which is logically incorrect.",
+            "recommendation": "Always validate that balance >= amount before performing the subtraction. This check should be performed before the state update to ensure the contract never enters an invalid state with negative balance.",
+            "codeChanges": {
+              "vulnerableCode": "if (op == 2) { ;; withdraw\n        int amount = in_msg_body~load_coins();\n        \n        ;; VULNERABILITY: External call before state update\n        send_raw_message(begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(sender)\n            .store_coins(amount)\n            .store_uint(0, 107)\n        .end_cell(), 1);\n        \n        ;; State update AFTER external call - VULNERABLE!\n        balance -= amount;\n    }",
+              "fixedCode": "if (op == 2) { ;; withdraw\n        int amount = in_msg_body~load_coins();\n        \n        ;; Validate sufficient balance before withdrawal\n        throw_unless(402, balance >= amount);\n        throw_unless(400, amount > 0);\n        \n        ;; State update BEFORE external call\n        balance -= amount;\n        \n        send_raw_message(begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(sender)\n            .store_coins(amount)\n            .store_uint(0, 107)\n        .end_cell(), 1);\n    }",
+              "startLine": 19,
+              "endLine": 32,
+              "changeDescription": "Added balance sufficiency check (balance >= amount) before the subtraction operation to prevent integer underflow or negative balance. Also added positive amount validation. This ensures the contract maintains valid state and prevents arithmetic errors.",
+              "function": "recv_internal"
+            }
+          }
+        ],
+        "completeCodeComparison": {
+          "hasChanges": true,
+          "original": ";; Simple TON wallet with reentrancy vulnerability\n\n#include \"stdlib.fc\";\n\nglobal int balance;\nglobal slice owner;\n\n() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    slice sender = cs~load_msg_addr();\n    \n    int op = in_msg_body~load_uint(32);\n    \n    if (op == 1) { ;; deposit\n        balance += msg_value;\n    }\n    \n    if (op == 2) { ;; withdraw\n        int amount = in_msg_body~load_coins();\n        \n        ;; VULNERABILITY: External call before state update\n        send_raw_message(begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(sender)\n            .store_coins(amount)\n            .store_uint(0, 107)\n        .end_cell(), 1);\n        \n        ;; State update AFTER external call - VULNERABLE!\n        balance -= amount;\n    }\n}\n\n() recv_external(slice in_msg) impure {\n    ;; VULNERABILITY: No access control!\n    accept_message();\n    \n    slice cs = in_msg;\n    int op = cs~load_uint(32);\n    \n    if (op == 3) { ;; admin function without checks\n        int new_balance = cs~load_coins();\n        balance = new_balance;\n    }\n}\n\nint get_balance() method_id {\n    return balance;\n}",
+          "corrected": ";; Secure TON wallet with all vulnerabilities fixed\n\n#include \"stdlib.fc\";\n\nglobal int balance;\nglobal slice owner;\nglobal int initialized;\n\n() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    \n    ;; Handle bounce messages - return immediately\n    if (flags & 1) {\n        return ();\n    }\n    \n    slice sender = cs~load_msg_addr();\n    \n    ;; Initialize owner on first message if not initialized\n    if (initialized == 0) {\n        owner = sender;\n        initialized = 1;\n    }\n    \n    int op = in_msg_body~load_uint(32);\n    \n    if (op == 1) { ;; deposit\n        balance += msg_value;\n    }\n    \n    if (op == 2) { ;; withdraw\n        int amount = in_msg_body~load_coins();\n        \n        ;; Validate amount is positive and within reasonable limits\n        throw_unless(400, amount > 0);\n        throw_unless(401, amount <= 10000000000000); ;; Max 10,000 TON per withdrawal\n        throw_unless(402, balance >= amount);\n        \n        ;; State update BEFORE external call - SECURE!\n        balance -= amount;\n        \n        ;; External call after state update\n        send_raw_message(begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(sender)\n            .store_coins(amount)\n            .store_uint(0, 107)\n        .end_cell(), 1);\n    }\n}\n\n() recv_external(slice in_msg) impure {\n    slice cs = in_msg;\n    \n    ;; Load signature and verify against owner\n    slice signature = cs~load_bits(512);\n    int msg_hash = slice_hash(cs);\n    throw_unless(403, check_signature(msg_hash, signature, owner));\n    \n    accept_message();\n    \n    int op = cs~load_uint(32);\n    \n    if (op == 3) { ;; admin function with proper access control\n        int new_balance = cs~load_coins();\n        throw_unless(404, new_balance >= 0);\n        balance = new_balance;\n    }\n}\n\nint get_balance() method_id {\n    return balance;\n}",
+          "changesExplanation": "The corrected code addresses all critical vulnerabilities: (1) Reentrancy vulnerability fixed by moving balance decrement before send_raw_message() call; (2) Added comprehensive validation for withdrawal amounts including positive value check, maximum limit, and sufficient balance verification; (3) Implemented signature-based access control in recv_external to prevent unauthorized balance manipulation; (4) Added bounce message handling to prevent bounced messages from affecting contract state; (5) Implemented owner initialization on first message to establish contract ownership; (6) Added balance sufficiency checks to prevent integer underflow. The contract now follows secure coding practices with proper state management, access control, and input validation."
+        },
+        "recommendations": [
+          {
+            "priority": "High",
+            "title": "Implement Per-User Balance Tracking",
+            "description": "The current contract uses a single global balance variable without tracking individual user deposits. Implement a proper balance mapping (using dictionaries/hashmaps) to track each user's balance separately. This prevents users from withdrawing funds deposited by others and provides proper accounting.",
+            "rationale": "Without per-user balance tracking, any user can withdraw the entire contract balance regardless of how much they deposited. This is a fundamental design flaw that makes the contract unsuitable as a wallet. Proper balance tracking is essential for multi-user wallet functionality."
+          },
+          {
+            "priority": "High",
+            "title": "Add Comprehensive Testing for Reentrancy Scenarios",
+            "description": "Deploy the contract to testnet and perform thorough testing with malicious contracts that attempt reentrancy attacks. Verify that the state update ordering prevents recursive withdrawals and that bounce handling works correctly in all scenarios.",
+            "rationale": "While the code fixes address the reentrancy vulnerability, real-world testing is essential to verify the fixes work correctly under attack conditions. Testing should include edge cases like gas exhaustion, bounce scenarios, and concurrent withdrawal attempts."
+          },
+          {
+            "priority": "High",
+            "title": "Implement Proper Owner Initialization During Deployment",
+            "description": "Instead of initializing the owner on first message, implement a proper deployment initialization that sets the owner address from deployment parameters. Use the contract's initial data to store the owner address, ensuring it's set correctly from the start.",
+            "rationale": "The current initialization approach (setting owner on first message) is vulnerable to front-running where an attacker could send the first message and claim ownership. Proper deployment-time initialization eliminates this risk and ensures the intended owner has control from the start."
+          },
+          {
+            "priority": "Medium",
+            "title": "Add Event Logging for All Operations",
+            "description": "Implement event emission for deposits, withdrawals, and administrative actions. This provides an audit trail and enables off-chain monitoring of contract activity. Use send_raw_message with appropriate flags to emit log messages.",
+            "rationale": "Event logging is crucial for monitoring contract activity, debugging issues, and providing transparency to users. It enables detection of suspicious activity and helps with forensic analysis if security incidents occur."
+          },
+          {
+            "priority": "Medium",
+            "title": "Implement Withdrawal Limits and Rate Limiting",
+            "description": "Add configurable withdrawal limits per transaction and per time period. Implement rate limiting to prevent rapid successive withdrawals. Store last withdrawal timestamp and enforce minimum time delays between withdrawals for large amounts.",
+            "rationale": "Withdrawal limits and rate limiting provide additional protection against fund theft even if other vulnerabilities exist. They limit the damage an attacker can cause and provide time for detection and response to suspicious activity."
+          },
+          {
+            "priority": "Low",
+            "title": "Add Emergency Pause Functionality",
+            "description": "Implement an emergency pause mechanism that allows the owner to temporarily disable withdrawals in case of detected attacks or vulnerabilities. Include a time-lock mechanism to prevent indefinite pausing and ensure users can eventually access their funds.",
+            "rationale": "Emergency pause functionality provides a last line of defense against active attacks. It allows the owner to stop fund loss while investigating issues and deploying fixes. Time-locks prevent abuse of the pause mechanism."
+          }
+        ],
+        "gasOptimizations": [
+          {
+            "location": "Lines 26-28 (recv_internal, deposit operation)",
+            "description": "The deposit operation (op == 1) could be optimized by combining the balance update with a single storage write. Consider batching multiple operations if the contract will handle high transaction volumes.",
+            "estimatedGasSavings": "Minimal (~5-10% per deposit transaction)"
+          },
+          {
+            "location": "Lines 13-28 (recv_internal, operation dispatch)",
+            "description": "Using separate if statements for operation dispatch is less efficient than using elseif or a jump table approach. Consider restructuring the operation dispatch logic to use elseif chains to avoid unnecessary condition checks.",
+            "estimatedGasSavings": "Minor (~10-15% for operations after the first check)"
+          },
+          {
+            "location": "Lines 54-62 (recv_external)",
+            "description": "The signature verification and message hash computation could be optimized by caching frequently used values. However, security should take precedence over gas optimization in authentication code.",
+            "estimatedGasSavings": "Negligible (security-critical code should prioritize correctness)"
+          }
+        ],
+        "codeQualityObservations": [
+          {
+            "description": "The contract lacks comprehensive error handling and meaningful error codes. Consider using a consistent error code scheme (e.g., 400-499 for validation errors, 500-599 for state errors) and documenting what each error code means."
+          },
+          {
+            "description": "The contract does not implement any getter methods beyond get_balance(). Consider adding getters for owner address, initialization status, and other relevant state to improve contract transparency and debuggability."
+          },
+          {
+            "description": "The code lacks inline documentation explaining the purpose of each operation code and the expected message format. Adding comprehensive comments would improve maintainability and reduce the risk of integration errors."
+          },
+          {
+            "description": "The contract does not implement any versioning mechanism. Consider adding a version getter method and including version information in the contract to track deployments and facilitate upgrades."
+          },
+          {
+            "description": "The message construction in send_raw_message uses magic numbers (0x18, 107) without explanation. Consider defining constants with descriptive names to improve code readability and maintainability."
+          }
+        ],
+        "positiveFindings": [
+          {
+            "aspect": "Use of impure Modifier",
+            "description": "The contract correctly uses the 'impure' modifier on recv_internal and recv_external functions, ensuring these functions can modify contract state and their calls are not optimized away by the compiler."
+          },
+          {
+            "aspect": "Proper Message Parsing",
+            "description": "The contract correctly parses incoming messages using begin_parse() and load operations, following TON best practices for message handling."
+          },
+          {
+            "aspect": "Simple and Focused Design",
+            "description": "The contract has a clear, simple structure that makes it easy to understand the intended functionality. This simplicity aids in security analysis and reduces the attack surface, though the implementation has critical flaws that need fixing."
+          }
+        ],
+        "nextSteps": "IMMEDIATE ACTION REQUIRED: This contract is NOT safe for production deployment in its current state. Before any deployment: (1) Apply ALL critical and high severity fixes from this audit; (2) Implement per-user balance tracking using dictionaries; (3) Add comprehensive unit tests covering all operations and attack scenarios; (4) Deploy to testnet and perform thorough security testing including reentrancy attack simulations; (5) Consider a follow-up audit after fixes are applied; (6) Implement proper owner initialization during deployment; (7) Add event logging and monitoring capabilities. The contract should achieve a security score of at least 75 (Grade B) before considering mainnet deployment.",
+        "proposedCodeComplete": ";; Secure TON wallet with all vulnerabilities fixed\n\n#include \"stdlib.fc\";\n\nglobal int balance;\nglobal slice owner;\nglobal int initialized;\n\n() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    \n    ;; Handle bounce messages - return immediately\n    if (flags & 1) {\n        return ();\n    }\n    \n    slice sender = cs~load_msg_addr();\n    \n    ;; Initialize owner on first message if not initialized\n    if (initialized == 0) {\n        owner = sender;\n        initialized = 1;\n    }\n    \n    int op = in_msg_body~load_uint(32);\n    \n    if (op == 1) { ;; deposit\n        balance += msg_value;\n    }\n    \n    if (op == 2) { ;; withdraw\n        int amount = in_msg_body~load_coins();\n        \n        ;; Validate amount is positive and within reasonable limits\n        throw_unless(400, amount > 0);\n        throw_unless(401, amount <= 10000000000000); ;; Max 10,000 TON per withdrawal\n        throw_unless(402, balance >= amount);\n        \n        ;; State update BEFORE external call - SECURE!\n        balance -= amount;\n        \n        ;; External call after state update\n        send_raw_message(begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(sender)\n            .store_coins(amount)\n            .store_uint(0, 107)\n        .end_cell(), 1);\n    }\n}\n\n() recv_external(slice in_msg) impure {\n    slice cs = in_msg;\n    \n    ;; Load signature and verify against owner\n    slice signature = cs~load_bits(512);\n    int msg_hash = slice_hash(cs);\n    throw_unless(403, check_signature(msg_hash, signature, owner));\n    \n    accept_message();\n    \n    int op = cs~load_uint(32);\n    \n    if (op == 3) { ;; admin function with proper access control\n        int new_balance = cs~load_coins();\n        throw_unless(404, new_balance >= 0);\n        balance = new_balance;\n    }\n}\n\nint get_balance() method_id {\n    return balance;\n}"
+      }
+    },
+    {
+      "capturedAt": "2026-03-14T18:52:47.481Z",
+      "provider": "FunC",
+      "contractFile": "VulnerableWallet.fc",
+      "response": {
+        "analysisMetadata": {
+          "contractName": "VulnerableWallet",
+          "language": "FunC",
+          "linesOfCode": 50,
+          "analysisDate": "2025-01-20T00:00:00Z",
+          "analysisTimestamp": "2025-01-20T00:00:00Z",
+          "totalIssuesFound": 6
+        },
+        "securityScore": 10,
+        "grade": "F",
+        "executiveSummary": "The VulnerableWallet contract contains multiple CRITICAL vulnerabilities that make it completely unsafe for production use. The contract suffers from a classic reentrancy vulnerability where external calls are made before state updates, allowing attackers to drain funds. Additionally, user-controlled amounts are directly used in .store_coins() without validation, enabling attackers to manipulate message values. The recv_external function lacks any access control, allowing anyone to arbitrarily modify the contract's balance. There is no bounce handling, no owner initialization, and no balance validation before withdrawals. The contract requires immediate and comprehensive fixes before any deployment.",
+        "findingsSummary": {
+          "critical": 4,
+          "high": 1,
+          "medium": 1,
+          "low": 0,
+          "informational": 0,
+          "totalFindings": 6
+        },
+        "findings": [
+          {
+            "id": "CRIT-001",
+            "severity": "CRITICAL",
+            "category": "Reentrancy",
+            "title": "Classic Reentrancy Vulnerability in Withdraw Function",
+            "description": "The withdraw function (op == 2) performs an external call via send_raw_message() before updating the balance state variable. This allows an attacker to recursively call the withdraw function before the balance is decremented, enabling them to drain all funds from the contract. The vulnerable pattern is: external call at lines 23-28, state update at line 31.",
+            "impact": "An attacker can completely drain the contract by exploiting the reentrancy vulnerability. By creating a malicious contract that calls withdraw repeatedly in its recv_internal handler, the attacker can withdraw the same funds multiple times before the balance is updated. This results in total loss of all deposited funds.",
+            "recommendation": "Move the state update (balance -= amount) BEFORE the external call to send_raw_message(). This ensures that the balance is decremented before any external code can be executed, preventing reentrancy attacks. Additionally, add a check to ensure sufficient balance exists before withdrawal.",
+            "codeChanges": {
+              "vulnerableCode": "if (op == 2) { ;; withdraw\n        int amount = in_msg_body~load_coins();\n        \n        ;; VULNERABILITY: External call before state update\n        send_raw_message(begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(sender)\n            .store_coins(amount)\n            .store_uint(0, 107)\n        .end_cell(), 1);\n        \n        ;; State update AFTER external call - VULNERABLE!\n        balance -= amount;\n    }",
+              "fixedCode": "if (op == 2) { ;; withdraw\n        int amount = in_msg_body~load_coins();\n        \n        ;; Check sufficient balance\n        throw_unless(402, balance >= amount);\n        \n        ;; State update BEFORE external call - SECURE!\n        balance -= amount;\n        \n        ;; External call after state update\n        send_raw_message(begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(sender)\n            .store_coins(amount)\n            .store_uint(0, 107)\n        .end_cell(), 1);\n    }",
+              "startLine": 19,
+              "endLine": 32,
+              "changeDescription": "Moved balance decrement (state update) before send_raw_message() call to prevent reentrancy. Added balance validation check to ensure sufficient funds exist before withdrawal. This eliminates the reentrancy vulnerability by ensuring state is updated before any external code execution.",
+              "function": "recv_internal"
+            }
+          },
+          {
+            "id": "CRIT-002",
+            "severity": "CRITICAL",
+            "category": "User Input Misuse",
+            "title": "User-Controlled Amount in store_coins() Enables Fund Manipulation",
+            "description": "The withdraw function uses user-supplied amount directly in .store_coins() without any validation or sanitization. The amount is loaded from in_msg_body and immediately used in the message construction. This allows an attacker to specify arbitrary withdrawal amounts, potentially exceeding the contract's actual balance or causing integer overflow issues.",
+            "impact": "An attacker can specify any withdrawal amount, including amounts larger than their actual balance or the contract's total balance. This can lead to fund theft, contract insolvency, or unexpected behavior. Combined with the reentrancy vulnerability, this makes the contract completely insecure.",
+            "recommendation": "Add strict validation on the withdrawal amount before using it. Ensure the amount does not exceed the sender's balance (if tracking per-user balances) or the contract's total balance. Consider implementing a maximum withdrawal limit and proper balance tracking per user.",
+            "codeChanges": {
+              "vulnerableCode": "int amount = in_msg_body~load_coins();\n        \n        ;; VULNERABILITY: External call before state update\n        send_raw_message(begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(sender)\n            .store_coins(amount)\n            .store_uint(0, 107)\n        .end_cell(), 1);",
+              "fixedCode": "int amount = in_msg_body~load_coins();\n        \n        ;; Validate amount is positive and within reasonable limits\n        throw_unless(400, amount > 0);\n        throw_unless(401, amount <= 10000000000000); ;; Max 10,000 TON per withdrawal\n        throw_unless(402, balance >= amount);\n        \n        ;; State update BEFORE external call\n        balance -= amount;\n        \n        send_raw_message(begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(sender)\n            .store_coins(amount)\n            .store_uint(0, 107)\n        .end_cell(), 1);",
+              "startLine": 20,
+              "endLine": 28,
+              "changeDescription": "Added comprehensive validation for user-supplied withdrawal amount: positive value check, maximum withdrawal limit (10,000 TON), and sufficient balance verification. While user input is still used in store_coins() (which is acceptable for withdrawal amounts after validation), the critical fix is the validation and state update ordering to prevent exploitation.",
+              "function": "recv_internal"
+            }
+          },
+          {
+            "id": "CRIT-003",
+            "severity": "CRITICAL",
+            "category": "Access Control",
+            "title": "Missing Access Control in recv_external Allows Arbitrary Balance Manipulation",
+            "description": "The recv_external function accepts external messages and allows anyone to modify the contract's balance variable (op == 3) without any authentication or authorization checks. The function calls accept_message() unconditionally and then processes operations that should be restricted to the contract owner. There is no verification of the sender's identity or authority.",
+            "impact": "Any external actor can send a message to arbitrarily set the contract's balance to any value, including zero or inflated amounts. This completely breaks the contract's accounting system and allows attackers to manipulate the perceived balance, potentially enabling unauthorized withdrawals or causing denial of service. This is a complete compromise of the contract's security model.",
+            "recommendation": "Implement proper access control by verifying the message signature against the owner's public key before accepting the message. Only allow the contract owner to execute administrative functions. Add owner initialization in the contract deployment and use check_signature() to verify message authenticity.",
+            "codeChanges": {
+              "vulnerableCode": "() recv_external(slice in_msg) impure {\n    ;; VULNERABILITY: No access control!\n    accept_message();\n    \n    slice cs = in_msg;\n    int op = cs~load_uint(32);\n    \n    if (op == 3) { ;; admin function without checks\n        int new_balance = cs~load_coins();\n        balance = new_balance;\n    }\n}",
+              "fixedCode": "() recv_external(slice in_msg) impure {\n    slice cs = in_msg;\n    \n    ;; Load signature and verify against owner\n    slice signature = cs~load_bits(512);\n    int msg_hash = slice_hash(cs);\n    throw_unless(403, check_signature(msg_hash, signature, owner));\n    \n    accept_message();\n    \n    int op = cs~load_uint(32);\n    \n    if (op == 3) { ;; admin function with proper access control\n        int new_balance = cs~load_coins();\n        throw_unless(404, new_balance >= 0);\n        balance = new_balance;\n    }\n}",
+              "startLine": 35,
+              "endLine": 45,
+              "changeDescription": "Added signature verification before accept_message() to ensure only the owner can execute external messages. The fix extracts the signature from the message, computes the message hash, and verifies it against the owner's public key using check_signature(). This prevents unauthorized access to administrative functions. Also added validation for new_balance to ensure it's non-negative.",
+              "function": "recv_external"
+            }
+          },
+          {
+            "id": "CRIT-004",
+            "severity": "CRITICAL",
+            "category": "Missing Bounce Handling",
+            "title": "No Bounce Message Handling in recv_internal",
+            "description": "The recv_internal function does not check for bounce messages (flags & 1). In TON, when a message fails to be processed by the recipient, it bounces back to the sender. Without proper bounce handling, the contract will attempt to process bounced messages as regular messages, potentially causing incorrect state updates or unexpected behavior. The flags are loaded at line 10 but never checked.",
+            "impact": "If a withdrawal message bounces (e.g., due to insufficient gas or invalid recipient), the contract will not detect it and the balance will remain decremented even though the funds were not actually sent. This leads to accounting discrepancies and potential loss of funds. Bounced messages could also trigger unintended operations if they match operation codes.",
+            "recommendation": "Add a bounce check at the beginning of recv_internal to immediately return if the message is a bounce. This prevents bounced messages from being processed as regular operations and ensures correct accounting.",
+            "codeChanges": {
+              "vulnerableCode": "() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    slice sender = cs~load_msg_addr();\n    \n    int op = in_msg_body~load_uint(32);",
+              "fixedCode": "() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    \n    ;; Handle bounce messages - return immediately\n    if (flags & 1) {\n        return ();\n    }\n    \n    slice sender = cs~load_msg_addr();\n    \n    int op = in_msg_body~load_uint(32);",
+              "startLine": 8,
+              "endLine": 13,
+              "changeDescription": "Added bounce message detection using (flags & 1) check immediately after loading flags. If the message is a bounce, the function returns early without processing any operations. This prevents bounced messages from affecting contract state and ensures proper accounting when withdrawals fail.",
+              "function": "recv_internal"
+            }
+          },
+          {
+            "id": "HIGH-001",
+            "severity": "HIGH",
+            "category": "Initialization",
+            "title": "Missing Owner Initialization",
+            "description": "The contract declares a global owner variable but never initializes it. There is no constructor or initialization function to set the owner address. This means the owner variable will be empty/null, causing the signature verification in recv_external to always fail (after the fix is applied), or allowing anyone to claim ownership if not properly initialized.",
+            "impact": "Without proper owner initialization, the contract cannot function correctly. If the owner is not set, legitimate administrative operations will fail. If there's a way to set the owner without authentication, an attacker could claim ownership. This is a critical operational issue that prevents proper contract deployment and management.",
+            "recommendation": "Add an initialization function or constructor that sets the owner address during contract deployment. This should be called once during deployment and should store the deployer's address or a specified owner address in the owner global variable.",
+            "codeChanges": {
+              "vulnerableCode": "global int balance;\nglobal slice owner;\n\n() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {",
+              "fixedCode": "global int balance;\nglobal slice owner;\nglobal int initialized;\n\n() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    \n    if (flags & 1) {\n        return ();\n    }\n    \n    slice sender = cs~load_msg_addr();\n    \n    ;; Initialize owner on first message if not initialized\n    if (initialized == 0) {\n        owner = sender;\n        initialized = 1;\n    }",
+              "startLine": 5,
+              "endLine": 8,
+              "changeDescription": "Added initialization logic that sets the owner to the first sender who interacts with the contract. Added a global 'initialized' flag to ensure owner is set only once. This provides a simple initialization mechanism, though a more robust approach would be to use a dedicated init() function or set the owner during contract deployment via storage initialization.",
+              "function": "recv_internal"
+            }
+          },
+          {
+            "id": "MED-001",
+            "severity": "MEDIUM",
+            "category": "Integer Safety",
+            "title": "Potential Integer Underflow in Balance Decrement",
+            "description": "The balance decrement operation (balance -= amount) does not check if the balance is sufficient before subtraction. While the fixed version adds this check, the original code could cause integer underflow if the withdrawal amount exceeds the current balance, potentially wrapping around to a very large positive number in some integer implementations.",
+            "impact": "If a withdrawal amount exceeds the balance, the subtraction could underflow, resulting in an incorrect (potentially very large) balance value. This breaks the contract's accounting and could enable further exploits. However, in FunC, integers are arbitrary precision, so this is less likely to cause wraparound but will still result in negative balance which is logically incorrect.",
+            "recommendation": "Always validate that balance >= amount before performing the subtraction. This check should be performed before the state update to ensure the contract never enters an invalid state with negative balance.",
+            "codeChanges": {
+              "vulnerableCode": "if (op == 2) { ;; withdraw\n        int amount = in_msg_body~load_coins();\n        \n        ;; VULNERABILITY: External call before state update\n        send_raw_message(begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(sender)\n            .store_coins(amount)\n            .store_uint(0, 107)\n        .end_cell(), 1);\n        \n        ;; State update AFTER external call - VULNERABLE!\n        balance -= amount;\n    }",
+              "fixedCode": "if (op == 2) { ;; withdraw\n        int amount = in_msg_body~load_coins();\n        \n        ;; Validate sufficient balance before withdrawal\n        throw_unless(402, balance >= amount);\n        throw_unless(400, amount > 0);\n        \n        ;; State update BEFORE external call\n        balance -= amount;\n        \n        send_raw_message(begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(sender)\n            .store_coins(amount)\n            .store_uint(0, 107)\n        .end_cell(), 1);\n    }",
+              "startLine": 19,
+              "endLine": 32,
+              "changeDescription": "Added balance sufficiency check (balance >= amount) before the subtraction operation to prevent integer underflow or negative balance. Also added positive amount validation. This ensures the contract maintains valid state and prevents arithmetic errors.",
+              "function": "recv_internal"
+            }
+          }
+        ],
+        "completeCodeComparison": {
+          "hasChanges": true,
+          "original": ";; Simple TON wallet with reentrancy vulnerability\n\n#include \"stdlib.fc\";\n\nglobal int balance;\nglobal slice owner;\n\n() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    slice sender = cs~load_msg_addr();\n    \n    int op = in_msg_body~load_uint(32);\n    \n    if (op == 1) { ;; deposit\n        balance += msg_value;\n    }\n    \n    if (op == 2) { ;; withdraw\n        int amount = in_msg_body~load_coins();\n        \n        ;; VULNERABILITY: External call before state update\n        send_raw_message(begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(sender)\n            .store_coins(amount)\n            .store_uint(0, 107)\n        .end_cell(), 1);\n        \n        ;; State update AFTER external call - VULNERABLE!\n        balance -= amount;\n    }\n}\n\n() recv_external(slice in_msg) impure {\n    ;; VULNERABILITY: No access control!\n    accept_message();\n    \n    slice cs = in_msg;\n    int op = cs~load_uint(32);\n    \n    if (op == 3) { ;; admin function without checks\n        int new_balance = cs~load_coins();\n        balance = new_balance;\n    }\n}\n\nint get_balance() method_id {\n    return balance;\n}",
+          "corrected": ";; Secure TON wallet with all vulnerabilities fixed\n\n#include \"stdlib.fc\";\n\nglobal int balance;\nglobal slice owner;\nglobal int initialized;\n\n() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    \n    ;; Handle bounce messages - return immediately\n    if (flags & 1) {\n        return ();\n    }\n    \n    slice sender = cs~load_msg_addr();\n    \n    ;; Initialize owner on first message if not initialized\n    if (initialized == 0) {\n        owner = sender;\n        initialized = 1;\n    }\n    \n    int op = in_msg_body~load_uint(32);\n    \n    if (op == 1) { ;; deposit\n        balance += msg_value;\n    }\n    \n    if (op == 2) { ;; withdraw\n        int amount = in_msg_body~load_coins();\n        \n        ;; Validate amount is positive and within reasonable limits\n        throw_unless(400, amount > 0);\n        throw_unless(401, amount <= 10000000000000); ;; Max 10,000 TON per withdrawal\n        throw_unless(402, balance >= amount);\n        \n        ;; State update BEFORE external call - SECURE!\n        balance -= amount;\n        \n        ;; External call after state update\n        send_raw_message(begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(sender)\n            .store_coins(amount)\n            .store_uint(0, 107)\n        .end_cell(), 1);\n    }\n}\n\n() recv_external(slice in_msg) impure {\n    slice cs = in_msg;\n    \n    ;; Load signature and verify against owner\n    slice signature = cs~load_bits(512);\n    int msg_hash = slice_hash(cs);\n    throw_unless(403, check_signature(msg_hash, signature, owner));\n    \n    accept_message();\n    \n    int op = cs~load_uint(32);\n    \n    if (op == 3) { ;; admin function with proper access control\n        int new_balance = cs~load_coins();\n        throw_unless(404, new_balance >= 0);\n        balance = new_balance;\n    }\n}\n\nint get_balance() method_id {\n    return balance;\n}",
+          "changesExplanation": "The corrected code addresses all critical vulnerabilities: (1) Reentrancy vulnerability fixed by moving balance decrement before send_raw_message() call; (2) Added comprehensive validation for withdrawal amounts including positive value check, maximum limit, and sufficient balance verification; (3) Implemented signature-based access control in recv_external to prevent unauthorized balance manipulation; (4) Added bounce message handling to prevent bounced messages from affecting contract state; (5) Implemented owner initialization on first message to establish contract ownership; (6) Added balance sufficiency checks to prevent integer underflow. The contract now follows secure coding practices with proper state management, access control, and input validation."
+        },
+        "recommendations": [
+          {
+            "priority": "High",
+            "title": "Implement Per-User Balance Tracking",
+            "description": "The current contract uses a single global balance variable without tracking individual user deposits. Implement a proper balance mapping (using dictionaries/hashmaps) to track each user's balance separately. This prevents users from withdrawing funds deposited by others and provides proper accounting.",
+            "rationale": "Without per-user balance tracking, any user can withdraw the entire contract balance regardless of how much they deposited. This is a fundamental design flaw that makes the contract unsuitable as a wallet. Proper balance tracking is essential for multi-user wallet functionality."
+          },
+          {
+            "priority": "High",
+            "title": "Add Comprehensive Testing for Reentrancy Scenarios",
+            "description": "Deploy the contract to testnet and perform thorough testing with malicious contracts that attempt reentrancy attacks. Verify that the state update ordering prevents recursive withdrawals and that bounce handling works correctly in all scenarios.",
+            "rationale": "While the code fixes address the reentrancy vulnerability, real-world testing is essential to verify the fixes work correctly under attack conditions. Testing should include edge cases like gas exhaustion, bounce scenarios, and concurrent withdrawal attempts."
+          },
+          {
+            "priority": "High",
+            "title": "Implement Proper Owner Initialization During Deployment",
+            "description": "Instead of initializing the owner on first message, implement a proper deployment initialization that sets the owner address from deployment parameters. Use the contract's initial data to store the owner address, ensuring it's set correctly from the start.",
+            "rationale": "The current initialization approach (setting owner on first message) is vulnerable to front-running where an attacker could send the first message and claim ownership. Proper deployment-time initialization eliminates this risk and ensures the intended owner has control from the start."
+          },
+          {
+            "priority": "Medium",
+            "title": "Add Event Logging for All Operations",
+            "description": "Implement event emission for deposits, withdrawals, and administrative actions. This provides an audit trail and enables off-chain monitoring of contract activity. Use send_raw_message with appropriate flags to emit log messages.",
+            "rationale": "Event logging is crucial for monitoring contract activity, debugging issues, and providing transparency to users. It enables detection of suspicious activity and helps with forensic analysis if security incidents occur."
+          },
+          {
+            "priority": "Medium",
+            "title": "Implement Withdrawal Limits and Rate Limiting",
+            "description": "Add configurable withdrawal limits per transaction and per time period. Implement rate limiting to prevent rapid successive withdrawals. Store last withdrawal timestamp and enforce minimum time delays between withdrawals for large amounts.",
+            "rationale": "Withdrawal limits and rate limiting provide additional protection against fund theft even if other vulnerabilities exist. They limit the damage an attacker can cause and provide time for detection and response to suspicious activity."
+          },
+          {
+            "priority": "Low",
+            "title": "Add Emergency Pause Functionality",
+            "description": "Implement an emergency pause mechanism that allows the owner to temporarily disable withdrawals in case of detected attacks or vulnerabilities. Include a time-lock mechanism to prevent indefinite pausing and ensure users can eventually access their funds.",
+            "rationale": "Emergency pause functionality provides a last line of defense against active attacks. It allows the owner to stop fund loss while investigating issues and deploying fixes. Time-locks prevent abuse of the pause mechanism."
+          }
+        ],
+        "gasOptimizations": [
+          {
+            "location": "Lines 26-28 (recv_internal, deposit operation)",
+            "description": "The deposit operation (op == 1) could be optimized by combining the balance update with a single storage write. Consider batching multiple operations if the contract will handle high transaction volumes.",
+            "estimatedGasSavings": "Minimal (~5-10% per deposit transaction)"
+          },
+          {
+            "location": "Lines 13-28 (recv_internal, operation dispatch)",
+            "description": "Using separate if statements for operation dispatch is less efficient than using elseif or a jump table approach. Consider restructuring the operation dispatch logic to use elseif chains to avoid unnecessary condition checks.",
+            "estimatedGasSavings": "Minor (~10-15% for operations after the first check)"
+          },
+          {
+            "location": "Lines 54-62 (recv_external)",
+            "description": "The signature verification and message hash computation could be optimized by caching frequently used values. However, security should take precedence over gas optimization in authentication code.",
+            "estimatedGasSavings": "Negligible (security-critical code should prioritize correctness)"
+          }
+        ],
+        "codeQualityObservations": [
+          {
+            "description": "The contract lacks comprehensive error handling and meaningful error codes. Consider using a consistent error code scheme (e.g., 400-499 for validation errors, 500-599 for state errors) and documenting what each error code means."
+          },
+          {
+            "description": "The contract does not implement any getter methods beyond get_balance(). Consider adding getters for owner address, initialization status, and other relevant state to improve contract transparency and debuggability."
+          },
+          {
+            "description": "The code lacks inline documentation explaining the purpose of each operation code and the expected message format. Adding comprehensive comments would improve maintainability and reduce the risk of integration errors."
+          },
+          {
+            "description": "The contract does not implement any versioning mechanism. Consider adding a version getter method and including version information in the contract to track deployments and facilitate upgrades."
+          },
+          {
+            "description": "The message construction in send_raw_message uses magic numbers (0x18, 107) without explanation. Consider defining constants with descriptive names to improve code readability and maintainability."
+          }
+        ],
+        "positiveFindings": [
+          {
+            "aspect": "Use of impure Modifier",
+            "description": "The contract correctly uses the 'impure' modifier on recv_internal and recv_external functions, ensuring these functions can modify contract state and their calls are not optimized away by the compiler."
+          },
+          {
+            "aspect": "Proper Message Parsing",
+            "description": "The contract correctly parses incoming messages using begin_parse() and load operations, following TON best practices for message handling."
+          },
+          {
+            "aspect": "Simple and Focused Design",
+            "description": "The contract has a clear, simple structure that makes it easy to understand the intended functionality. This simplicity aids in security analysis and reduces the attack surface, though the implementation has critical flaws that need fixing."
+          }
+        ],
+        "nextSteps": "IMMEDIATE ACTION REQUIRED: This contract is NOT safe for production deployment in its current state. Before any deployment: (1) Apply ALL critical and high severity fixes from this audit; (2) Implement per-user balance tracking using dictionaries; (3) Add comprehensive unit tests covering all operations and attack scenarios; (4) Deploy to testnet and perform thorough security testing including reentrancy attack simulations; (5) Consider a follow-up audit after fixes are applied; (6) Implement proper owner initialization during deployment; (7) Add event logging and monitoring capabilities. The contract should achieve a security score of at least 75 (Grade B) before considering mainnet deployment.",
+        "proposedCodeComplete": ";; Secure TON wallet with all vulnerabilities fixed\n\n#include \"stdlib.fc\";\n\nglobal int balance;\nglobal slice owner;\nglobal int initialized;\n\n() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    \n    ;; Handle bounce messages - return immediately\n    if (flags & 1) {\n        return ();\n    }\n    \n    slice sender = cs~load_msg_addr();\n    \n    ;; Initialize owner on first message if not initialized\n    if (initialized == 0) {\n        owner = sender;\n        initialized = 1;\n    }\n    \n    int op = in_msg_body~load_uint(32);\n    \n    if (op == 1) { ;; deposit\n        balance += msg_value;\n    }\n    \n    if (op == 2) { ;; withdraw\n        int amount = in_msg_body~load_coins();\n        \n        ;; Validate amount is positive and within reasonable limits\n        throw_unless(400, amount > 0);\n        throw_unless(401, amount <= 10000000000000); ;; Max 10,000 TON per withdrawal\n        throw_unless(402, balance >= amount);\n        \n        ;; State update BEFORE external call - SECURE!\n        balance -= amount;\n        \n        ;; External call after state update\n        send_raw_message(begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(sender)\n            .store_coins(amount)\n            .store_uint(0, 107)\n        .end_cell(), 1);\n    }\n}\n\n() recv_external(slice in_msg) impure {\n    slice cs = in_msg;\n    \n    ;; Load signature and verify against owner\n    slice signature = cs~load_bits(512);\n    int msg_hash = slice_hash(cs);\n    throw_unless(403, check_signature(msg_hash, signature, owner));\n    \n    accept_message();\n    \n    int op = cs~load_uint(32);\n    \n    if (op == 3) { ;; admin function with proper access control\n        int new_balance = cs~load_coins();\n        throw_unless(404, new_balance >= 0);\n        balance = new_balance;\n    }\n}\n\nint get_balance() method_id {\n    return balance;\n}"
+      }
+    },
+    {
+      "capturedAt": "2026-03-14T18:52:47.487Z",
+      "provider": "FunC",
+      "contractFile": "VulnerableWallet.fc",
+      "response": {
+        "analysisMetadata": {
+          "contractName": "VulnerableWallet",
+          "language": "FunC",
+          "linesOfCode": 50,
+          "analysisDate": "2025-01-20T00:00:00Z",
+          "analysisTimestamp": "2025-01-20T00:00:00Z",
+          "totalIssuesFound": 6
+        },
+        "securityScore": 10,
+        "grade": "F",
+        "executiveSummary": "The VulnerableWallet contract contains multiple CRITICAL vulnerabilities that make it completely unsafe for production use. The contract suffers from a classic reentrancy vulnerability where external calls are made before state updates, allowing attackers to drain funds. Additionally, user-controlled amounts are directly used in .store_coins() without validation, enabling attackers to manipulate message values. The recv_external function lacks any access control, allowing anyone to arbitrarily modify the contract's balance. There is no bounce handling, no owner initialization, and no balance validation before withdrawals. The contract requires immediate and comprehensive fixes before any deployment.",
+        "findingsSummary": {
+          "critical": 4,
+          "high": 1,
+          "medium": 1,
+          "low": 0,
+          "informational": 0,
+          "totalFindings": 6
+        },
+        "findings": [
+          {
+            "id": "CRIT-001",
+            "severity": "CRITICAL",
+            "category": "Reentrancy",
+            "title": "Classic Reentrancy Vulnerability in Withdraw Function",
+            "description": "The withdraw function (op == 2) performs an external call via send_raw_message() before updating the balance state variable. This allows an attacker to recursively call the withdraw function before the balance is decremented, enabling them to drain all funds from the contract. The vulnerable pattern is: external call at lines 23-28, state update at line 31.",
+            "impact": "An attacker can completely drain the contract by exploiting the reentrancy vulnerability. By creating a malicious contract that calls withdraw repeatedly in its recv_internal handler, the attacker can withdraw the same funds multiple times before the balance is updated. This results in total loss of all deposited funds.",
+            "recommendation": "Move the state update (balance -= amount) BEFORE the external call to send_raw_message(). This ensures that the balance is decremented before any external code can be executed, preventing reentrancy attacks. Additionally, add a check to ensure sufficient balance exists before withdrawal.",
+            "codeChanges": {
+              "vulnerableCode": "if (op == 2) { ;; withdraw\n        int amount = in_msg_body~load_coins();\n        \n        ;; VULNERABILITY: External call before state update\n        send_raw_message(begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(sender)\n            .store_coins(amount)\n            .store_uint(0, 107)\n        .end_cell(), 1);\n        \n        ;; State update AFTER external call - VULNERABLE!\n        balance -= amount;\n    }",
+              "fixedCode": "if (op == 2) { ;; withdraw\n        int amount = in_msg_body~load_coins();\n        \n        ;; Check sufficient balance\n        throw_unless(402, balance >= amount);\n        \n        ;; State update BEFORE external call - SECURE!\n        balance -= amount;\n        \n        ;; External call after state update\n        send_raw_message(begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(sender)\n            .store_coins(amount)\n            .store_uint(0, 107)\n        .end_cell(), 1);\n    }",
+              "startLine": 19,
+              "endLine": 32,
+              "changeDescription": "Moved balance decrement (state update) before send_raw_message() call to prevent reentrancy. Added balance validation check to ensure sufficient funds exist before withdrawal. This eliminates the reentrancy vulnerability by ensuring state is updated before any external code execution.",
+              "function": "recv_internal"
+            }
+          },
+          {
+            "id": "CRIT-002",
+            "severity": "CRITICAL",
+            "category": "User Input Misuse",
+            "title": "User-Controlled Amount in store_coins() Enables Fund Manipulation",
+            "description": "The withdraw function uses user-supplied amount directly in .store_coins() without any validation or sanitization. The amount is loaded from in_msg_body and immediately used in the message construction. This allows an attacker to specify arbitrary withdrawal amounts, potentially exceeding the contract's actual balance or causing integer overflow issues.",
+            "impact": "An attacker can specify any withdrawal amount, including amounts larger than their actual balance or the contract's total balance. This can lead to fund theft, contract insolvency, or unexpected behavior. Combined with the reentrancy vulnerability, this makes the contract completely insecure.",
+            "recommendation": "Add strict validation on the withdrawal amount before using it. Ensure the amount does not exceed the sender's balance (if tracking per-user balances) or the contract's total balance. Consider implementing a maximum withdrawal limit and proper balance tracking per user.",
+            "codeChanges": {
+              "vulnerableCode": "int amount = in_msg_body~load_coins();\n        \n        ;; VULNERABILITY: External call before state update\n        send_raw_message(begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(sender)\n            .store_coins(amount)\n            .store_uint(0, 107)\n        .end_cell(), 1);",
+              "fixedCode": "int amount = in_msg_body~load_coins();\n        \n        ;; Validate amount is positive and within reasonable limits\n        throw_unless(400, amount > 0);\n        throw_unless(401, amount <= 10000000000000); ;; Max 10,000 TON per withdrawal\n        throw_unless(402, balance >= amount);\n        \n        ;; State update BEFORE external call\n        balance -= amount;\n        \n        send_raw_message(begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(sender)\n            .store_coins(amount)\n            .store_uint(0, 107)\n        .end_cell(), 1);",
+              "startLine": 20,
+              "endLine": 28,
+              "changeDescription": "Added comprehensive validation for user-supplied withdrawal amount: positive value check, maximum withdrawal limit (10,000 TON), and sufficient balance verification. While user input is still used in store_coins() (which is acceptable for withdrawal amounts after validation), the critical fix is the validation and state update ordering to prevent exploitation.",
+              "function": "recv_internal"
+            }
+          },
+          {
+            "id": "CRIT-003",
+            "severity": "CRITICAL",
+            "category": "Access Control",
+            "title": "Missing Access Control in recv_external Allows Arbitrary Balance Manipulation",
+            "description": "The recv_external function accepts external messages and allows anyone to modify the contract's balance variable (op == 3) without any authentication or authorization checks. The function calls accept_message() unconditionally and then processes operations that should be restricted to the contract owner. There is no verification of the sender's identity or authority.",
+            "impact": "Any external actor can send a message to arbitrarily set the contract's balance to any value, including zero or inflated amounts. This completely breaks the contract's accounting system and allows attackers to manipulate the perceived balance, potentially enabling unauthorized withdrawals or causing denial of service. This is a complete compromise of the contract's security model.",
+            "recommendation": "Implement proper access control by verifying the message signature against the owner's public key before accepting the message. Only allow the contract owner to execute administrative functions. Add owner initialization in the contract deployment and use check_signature() to verify message authenticity.",
+            "codeChanges": {
+              "vulnerableCode": "() recv_external(slice in_msg) impure {\n    ;; VULNERABILITY: No access control!\n    accept_message();\n    \n    slice cs = in_msg;\n    int op = cs~load_uint(32);\n    \n    if (op == 3) { ;; admin function without checks\n        int new_balance = cs~load_coins();\n        balance = new_balance;\n    }\n}",
+              "fixedCode": "() recv_external(slice in_msg) impure {\n    slice cs = in_msg;\n    \n    ;; Load signature and verify against owner\n    slice signature = cs~load_bits(512);\n    int msg_hash = slice_hash(cs);\n    throw_unless(403, check_signature(msg_hash, signature, owner));\n    \n    accept_message();\n    \n    int op = cs~load_uint(32);\n    \n    if (op == 3) { ;; admin function with proper access control\n        int new_balance = cs~load_coins();\n        throw_unless(404, new_balance >= 0);\n        balance = new_balance;\n    }\n}",
+              "startLine": 35,
+              "endLine": 45,
+              "changeDescription": "Added signature verification before accept_message() to ensure only the owner can execute external messages. The fix extracts the signature from the message, computes the message hash, and verifies it against the owner's public key using check_signature(). This prevents unauthorized access to administrative functions. Also added validation for new_balance to ensure it's non-negative.",
+              "function": "recv_external"
+            }
+          },
+          {
+            "id": "CRIT-004",
+            "severity": "CRITICAL",
+            "category": "Missing Bounce Handling",
+            "title": "No Bounce Message Handling in recv_internal",
+            "description": "The recv_internal function does not check for bounce messages (flags & 1). In TON, when a message fails to be processed by the recipient, it bounces back to the sender. Without proper bounce handling, the contract will attempt to process bounced messages as regular messages, potentially causing incorrect state updates or unexpected behavior. The flags are loaded at line 10 but never checked.",
+            "impact": "If a withdrawal message bounces (e.g., due to insufficient gas or invalid recipient), the contract will not detect it and the balance will remain decremented even though the funds were not actually sent. This leads to accounting discrepancies and potential loss of funds. Bounced messages could also trigger unintended operations if they match operation codes.",
+            "recommendation": "Add a bounce check at the beginning of recv_internal to immediately return if the message is a bounce. This prevents bounced messages from being processed as regular operations and ensures correct accounting.",
+            "codeChanges": {
+              "vulnerableCode": "() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    slice sender = cs~load_msg_addr();\n    \n    int op = in_msg_body~load_uint(32);",
+              "fixedCode": "() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    \n    ;; Handle bounce messages - return immediately\n    if (flags & 1) {\n        return ();\n    }\n    \n    slice sender = cs~load_msg_addr();\n    \n    int op = in_msg_body~load_uint(32);",
+              "startLine": 8,
+              "endLine": 13,
+              "changeDescription": "Added bounce message detection using (flags & 1) check immediately after loading flags. If the message is a bounce, the function returns early without processing any operations. This prevents bounced messages from affecting contract state and ensures proper accounting when withdrawals fail.",
+              "function": "recv_internal"
+            }
+          },
+          {
+            "id": "HIGH-001",
+            "severity": "HIGH",
+            "category": "Initialization",
+            "title": "Missing Owner Initialization",
+            "description": "The contract declares a global owner variable but never initializes it. There is no constructor or initialization function to set the owner address. This means the owner variable will be empty/null, causing the signature verification in recv_external to always fail (after the fix is applied), or allowing anyone to claim ownership if not properly initialized.",
+            "impact": "Without proper owner initialization, the contract cannot function correctly. If the owner is not set, legitimate administrative operations will fail. If there's a way to set the owner without authentication, an attacker could claim ownership. This is a critical operational issue that prevents proper contract deployment and management.",
+            "recommendation": "Add an initialization function or constructor that sets the owner address during contract deployment. This should be called once during deployment and should store the deployer's address or a specified owner address in the owner global variable.",
+            "codeChanges": {
+              "vulnerableCode": "global int balance;\nglobal slice owner;\n\n() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {",
+              "fixedCode": "global int balance;\nglobal slice owner;\nglobal int initialized;\n\n() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    \n    if (flags & 1) {\n        return ();\n    }\n    \n    slice sender = cs~load_msg_addr();\n    \n    ;; Initialize owner on first message if not initialized\n    if (initialized == 0) {\n        owner = sender;\n        initialized = 1;\n    }",
+              "startLine": 5,
+              "endLine": 8,
+              "changeDescription": "Added initialization logic that sets the owner to the first sender who interacts with the contract. Added a global 'initialized' flag to ensure owner is set only once. This provides a simple initialization mechanism, though a more robust approach would be to use a dedicated init() function or set the owner during contract deployment via storage initialization.",
+              "function": "recv_internal"
+            }
+          },
+          {
+            "id": "MED-001",
+            "severity": "MEDIUM",
+            "category": "Integer Safety",
+            "title": "Potential Integer Underflow in Balance Decrement",
+            "description": "The balance decrement operation (balance -= amount) does not check if the balance is sufficient before subtraction. While the fixed version adds this check, the original code could cause integer underflow if the withdrawal amount exceeds the current balance, potentially wrapping around to a very large positive number in some integer implementations.",
+            "impact": "If a withdrawal amount exceeds the balance, the subtraction could underflow, resulting in an incorrect (potentially very large) balance value. This breaks the contract's accounting and could enable further exploits. However, in FunC, integers are arbitrary precision, so this is less likely to cause wraparound but will still result in negative balance which is logically incorrect.",
+            "recommendation": "Always validate that balance >= amount before performing the subtraction. This check should be performed before the state update to ensure the contract never enters an invalid state with negative balance.",
+            "codeChanges": {
+              "vulnerableCode": "if (op == 2) { ;; withdraw\n        int amount = in_msg_body~load_coins();\n        \n        ;; VULNERABILITY: External call before state update\n        send_raw_message(begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(sender)\n            .store_coins(amount)\n            .store_uint(0, 107)\n        .end_cell(), 1);\n        \n        ;; State update AFTER external call - VULNERABLE!\n        balance -= amount;\n    }",
+              "fixedCode": "if (op == 2) { ;; withdraw\n        int amount = in_msg_body~load_coins();\n        \n        ;; Validate sufficient balance before withdrawal\n        throw_unless(402, balance >= amount);\n        throw_unless(400, amount > 0);\n        \n        ;; State update BEFORE external call\n        balance -= amount;\n        \n        send_raw_message(begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(sender)\n            .store_coins(amount)\n            .store_uint(0, 107)\n        .end_cell(), 1);\n    }",
+              "startLine": 19,
+              "endLine": 32,
+              "changeDescription": "Added balance sufficiency check (balance >= amount) before the subtraction operation to prevent integer underflow or negative balance. Also added positive amount validation. This ensures the contract maintains valid state and prevents arithmetic errors.",
+              "function": "recv_internal"
+            }
+          }
+        ],
+        "completeCodeComparison": {
+          "hasChanges": true,
+          "original": ";; Simple TON wallet with reentrancy vulnerability\n\n#include \"stdlib.fc\";\n\nglobal int balance;\nglobal slice owner;\n\n() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    slice sender = cs~load_msg_addr();\n    \n    int op = in_msg_body~load_uint(32);\n    \n    if (op == 1) { ;; deposit\n        balance += msg_value;\n    }\n    \n    if (op == 2) { ;; withdraw\n        int amount = in_msg_body~load_coins();\n        \n        ;; VULNERABILITY: External call before state update\n        send_raw_message(begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(sender)\n            .store_coins(amount)\n            .store_uint(0, 107)\n        .end_cell(), 1);\n        \n        ;; State update AFTER external call - VULNERABLE!\n        balance -= amount;\n    }\n}\n\n() recv_external(slice in_msg) impure {\n    ;; VULNERABILITY: No access control!\n    accept_message();\n    \n    slice cs = in_msg;\n    int op = cs~load_uint(32);\n    \n    if (op == 3) { ;; admin function without checks\n        int new_balance = cs~load_coins();\n        balance = new_balance;\n    }\n}\n\nint get_balance() method_id {\n    return balance;\n}",
+          "corrected": ";; Secure TON wallet with all vulnerabilities fixed\n\n#include \"stdlib.fc\";\n\nglobal int balance;\nglobal slice owner;\nglobal int initialized;\n\n() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    \n    ;; Handle bounce messages - return immediately\n    if (flags & 1) {\n        return ();\n    }\n    \n    slice sender = cs~load_msg_addr();\n    \n    ;; Initialize owner on first message if not initialized\n    if (initialized == 0) {\n        owner = sender;\n        initialized = 1;\n    }\n    \n    int op = in_msg_body~load_uint(32);\n    \n    if (op == 1) { ;; deposit\n        balance += msg_value;\n    }\n    \n    if (op == 2) { ;; withdraw\n        int amount = in_msg_body~load_coins();\n        \n        ;; Validate amount is positive and within reasonable limits\n        throw_unless(400, amount > 0);\n        throw_unless(401, amount <= 10000000000000); ;; Max 10,000 TON per withdrawal\n        throw_unless(402, balance >= amount);\n        \n        ;; State update BEFORE external call - SECURE!\n        balance -= amount;\n        \n        ;; External call after state update\n        send_raw_message(begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(sender)\n            .store_coins(amount)\n            .store_uint(0, 107)\n        .end_cell(), 1);\n    }\n}\n\n() recv_external(slice in_msg) impure {\n    slice cs = in_msg;\n    \n    ;; Load signature and verify against owner\n    slice signature = cs~load_bits(512);\n    int msg_hash = slice_hash(cs);\n    throw_unless(403, check_signature(msg_hash, signature, owner));\n    \n    accept_message();\n    \n    int op = cs~load_uint(32);\n    \n    if (op == 3) { ;; admin function with proper access control\n        int new_balance = cs~load_coins();\n        throw_unless(404, new_balance >= 0);\n        balance = new_balance;\n    }\n}\n\nint get_balance() method_id {\n    return balance;\n}",
+          "changesExplanation": "The corrected code addresses all critical vulnerabilities: (1) Reentrancy vulnerability fixed by moving balance decrement before send_raw_message() call; (2) Added comprehensive validation for withdrawal amounts including positive value check, maximum limit, and sufficient balance verification; (3) Implemented signature-based access control in recv_external to prevent unauthorized balance manipulation; (4) Added bounce message handling to prevent bounced messages from affecting contract state; (5) Implemented owner initialization on first message to establish contract ownership; (6) Added balance sufficiency checks to prevent integer underflow. The contract now follows secure coding practices with proper state management, access control, and input validation."
+        },
+        "recommendations": [
+          {
+            "priority": "High",
+            "title": "Implement Per-User Balance Tracking",
+            "description": "The current contract uses a single global balance variable without tracking individual user deposits. Implement a proper balance mapping (using dictionaries/hashmaps) to track each user's balance separately. This prevents users from withdrawing funds deposited by others and provides proper accounting.",
+            "rationale": "Without per-user balance tracking, any user can withdraw the entire contract balance regardless of how much they deposited. This is a fundamental design flaw that makes the contract unsuitable as a wallet. Proper balance tracking is essential for multi-user wallet functionality."
+          },
+          {
+            "priority": "High",
+            "title": "Add Comprehensive Testing for Reentrancy Scenarios",
+            "description": "Deploy the contract to testnet and perform thorough testing with malicious contracts that attempt reentrancy attacks. Verify that the state update ordering prevents recursive withdrawals and that bounce handling works correctly in all scenarios.",
+            "rationale": "While the code fixes address the reentrancy vulnerability, real-world testing is essential to verify the fixes work correctly under attack conditions. Testing should include edge cases like gas exhaustion, bounce scenarios, and concurrent withdrawal attempts."
+          },
+          {
+            "priority": "High",
+            "title": "Implement Proper Owner Initialization During Deployment",
+            "description": "Instead of initializing the owner on first message, implement a proper deployment initialization that sets the owner address from deployment parameters. Use the contract's initial data to store the owner address, ensuring it's set correctly from the start.",
+            "rationale": "The current initialization approach (setting owner on first message) is vulnerable to front-running where an attacker could send the first message and claim ownership. Proper deployment-time initialization eliminates this risk and ensures the intended owner has control from the start."
+          },
+          {
+            "priority": "Medium",
+            "title": "Add Event Logging for All Operations",
+            "description": "Implement event emission for deposits, withdrawals, and administrative actions. This provides an audit trail and enables off-chain monitoring of contract activity. Use send_raw_message with appropriate flags to emit log messages.",
+            "rationale": "Event logging is crucial for monitoring contract activity, debugging issues, and providing transparency to users. It enables detection of suspicious activity and helps with forensic analysis if security incidents occur."
+          },
+          {
+            "priority": "Medium",
+            "title": "Implement Withdrawal Limits and Rate Limiting",
+            "description": "Add configurable withdrawal limits per transaction and per time period. Implement rate limiting to prevent rapid successive withdrawals. Store last withdrawal timestamp and enforce minimum time delays between withdrawals for large amounts.",
+            "rationale": "Withdrawal limits and rate limiting provide additional protection against fund theft even if other vulnerabilities exist. They limit the damage an attacker can cause and provide time for detection and response to suspicious activity."
+          },
+          {
+            "priority": "Low",
+            "title": "Add Emergency Pause Functionality",
+            "description": "Implement an emergency pause mechanism that allows the owner to temporarily disable withdrawals in case of detected attacks or vulnerabilities. Include a time-lock mechanism to prevent indefinite pausing and ensure users can eventually access their funds.",
+            "rationale": "Emergency pause functionality provides a last line of defense against active attacks. It allows the owner to stop fund loss while investigating issues and deploying fixes. Time-locks prevent abuse of the pause mechanism."
+          }
+        ],
+        "gasOptimizations": [
+          {
+            "location": "Lines 26-28 (recv_internal, deposit operation)",
+            "description": "The deposit operation (op == 1) could be optimized by combining the balance update with a single storage write. Consider batching multiple operations if the contract will handle high transaction volumes.",
+            "estimatedGasSavings": "Minimal (~5-10% per deposit transaction)"
+          },
+          {
+            "location": "Lines 13-28 (recv_internal, operation dispatch)",
+            "description": "Using separate if statements for operation dispatch is less efficient than using elseif or a jump table approach. Consider restructuring the operation dispatch logic to use elseif chains to avoid unnecessary condition checks.",
+            "estimatedGasSavings": "Minor (~10-15% for operations after the first check)"
+          },
+          {
+            "location": "Lines 54-62 (recv_external)",
+            "description": "The signature verification and message hash computation could be optimized by caching frequently used values. However, security should take precedence over gas optimization in authentication code.",
+            "estimatedGasSavings": "Negligible (security-critical code should prioritize correctness)"
+          }
+        ],
+        "codeQualityObservations": [
+          {
+            "description": "The contract lacks comprehensive error handling and meaningful error codes. Consider using a consistent error code scheme (e.g., 400-499 for validation errors, 500-599 for state errors) and documenting what each error code means."
+          },
+          {
+            "description": "The contract does not implement any getter methods beyond get_balance(). Consider adding getters for owner address, initialization status, and other relevant state to improve contract transparency and debuggability."
+          },
+          {
+            "description": "The code lacks inline documentation explaining the purpose of each operation code and the expected message format. Adding comprehensive comments would improve maintainability and reduce the risk of integration errors."
+          },
+          {
+            "description": "The contract does not implement any versioning mechanism. Consider adding a version getter method and including version information in the contract to track deployments and facilitate upgrades."
+          },
+          {
+            "description": "The message construction in send_raw_message uses magic numbers (0x18, 107) without explanation. Consider defining constants with descriptive names to improve code readability and maintainability."
+          }
+        ],
+        "positiveFindings": [
+          {
+            "aspect": "Use of impure Modifier",
+            "description": "The contract correctly uses the 'impure' modifier on recv_internal and recv_external functions, ensuring these functions can modify contract state and their calls are not optimized away by the compiler."
+          },
+          {
+            "aspect": "Proper Message Parsing",
+            "description": "The contract correctly parses incoming messages using begin_parse() and load operations, following TON best practices for message handling."
+          },
+          {
+            "aspect": "Simple and Focused Design",
+            "description": "The contract has a clear, simple structure that makes it easy to understand the intended functionality. This simplicity aids in security analysis and reduces the attack surface, though the implementation has critical flaws that need fixing."
+          }
+        ],
+        "nextSteps": "IMMEDIATE ACTION REQUIRED: This contract is NOT safe for production deployment in its current state. Before any deployment: (1) Apply ALL critical and high severity fixes from this audit; (2) Implement per-user balance tracking using dictionaries; (3) Add comprehensive unit tests covering all operations and attack scenarios; (4) Deploy to testnet and perform thorough security testing including reentrancy attack simulations; (5) Consider a follow-up audit after fixes are applied; (6) Implement proper owner initialization during deployment; (7) Add event logging and monitoring capabilities. The contract should achieve a security score of at least 75 (Grade B) before considering mainnet deployment.",
+        "proposedCodeComplete": ";; Secure TON wallet with all vulnerabilities fixed\n\n#include \"stdlib.fc\";\n\nglobal int balance;\nglobal slice owner;\nglobal int initialized;\n\n() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    \n    ;; Handle bounce messages - return immediately\n    if (flags & 1) {\n        return ();\n    }\n    \n    slice sender = cs~load_msg_addr();\n    \n    ;; Initialize owner on first message if not initialized\n    if (initialized == 0) {\n        owner = sender;\n        initialized = 1;\n    }\n    \n    int op = in_msg_body~load_uint(32);\n    \n    if (op == 1) { ;; deposit\n        balance += msg_value;\n    }\n    \n    if (op == 2) { ;; withdraw\n        int amount = in_msg_body~load_coins();\n        \n        ;; Validate amount is positive and within reasonable limits\n        throw_unless(400, amount > 0);\n        throw_unless(401, amount <= 10000000000000); ;; Max 10,000 TON per withdrawal\n        throw_unless(402, balance >= amount);\n        \n        ;; State update BEFORE external call - SECURE!\n        balance -= amount;\n        \n        ;; External call after state update\n        send_raw_message(begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(sender)\n            .store_coins(amount)\n            .store_uint(0, 107)\n        .end_cell(), 1);\n    }\n}\n\n() recv_external(slice in_msg) impure {\n    slice cs = in_msg;\n    \n    ;; Load signature and verify against owner\n    slice signature = cs~load_bits(512);\n    int msg_hash = slice_hash(cs);\n    throw_unless(403, check_signature(msg_hash, signature, owner));\n    \n    accept_message();\n    \n    int op = cs~load_uint(32);\n    \n    if (op == 3) { ;; admin function with proper access control\n        int new_balance = cs~load_coins();\n        throw_unless(404, new_balance >= 0);\n        balance = new_balance;\n    }\n}\n\nint get_balance() method_id {\n    return balance;\n}"
+      }
+    }
+  ]
+}

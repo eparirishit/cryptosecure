@@ -1,0 +1,635 @@
+{
+  "contractFile": "forward_ton_demo.func",
+  "runs": [
+    {
+      "capturedAt": "2026-03-14T19:06:10.513Z",
+      "provider": "FunC",
+      "contractFile": "forward_ton_demo.func",
+      "response": {
+        "analysisMetadata": {
+          "contractName": "forward_ton_demo",
+          "language": "FunC",
+          "linesOfCode": 43,
+          "analysisDate": "2025-01-10T00:00:00Z",
+          "analysisTimestamp": "2025-01-10T00:00:00Z",
+          "totalIssuesFound": 6
+        },
+        "securityScore": 10,
+        "grade": "F",
+        "executiveSummary": "The contract contains CRITICAL vulnerabilities that allow attackers to drain funds and manipulate message values. Multiple user-controlled values are used in .store_coins() operations without validation, enabling attackers to specify arbitrary TON amounts. The contract lacks access control, allowing anyone to trigger withdrawals. Additionally, there's a critical undefined variable reference that would prevent compilation. These issues pose immediate and severe risks to fund security.",
+        "findingsSummary": {
+          "critical": 4,
+          "high": 1,
+          "medium": 0,
+          "low": 1,
+          "informational": 0,
+          "totalFindings": 6
+        },
+        "findings": [
+          {
+            "id": "CRIT-001",
+            "severity": "CRITICAL",
+            "category": "User Input Misuse",
+            "title": "User-Controlled Amount in Message Value",
+            "description": "Line 33 uses user-controlled 'amount' and 'forward_ton_amount' values directly in .store_coins() for the message value. An attacker can specify arbitrary amounts, potentially draining the contract or causing unexpected behavior. The expression 'JETTON_TRANSFER_GAS + forward_ton_amount' combines a constant with user input, making the total message value attacker-controlled.",
+            "impact": "Attackers can specify arbitrary TON amounts to be sent with messages, potentially draining contract funds or causing DoS by specifying amounts exceeding contract balance. This is a direct fund loss vulnerability.",
+            "recommendation": "Replace user-controlled values in message value with validated constants. Move forward_ton_amount to the payload only, not the message value. Use a fixed, safe amount for message value.",
+            "codeChanges": {
+              "vulnerableCode": "        cell msg = begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(USDT_WALLET_ADDRESS)\n            .store_coins(JETTON_TRANSFER_GAS + forward_ton_amount)\n            .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)\n            .store_ref(ref)\n            .end_cell();",
+              "fixedCode": "        ;; Validate forward_ton_amount to prevent excessive values\n        throw_unless(401, forward_ton_amount <= 100000000); ;; Max 0.1 TON\n        \n        cell msg = begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(USDT_WALLET_ADDRESS)\n            .store_coins(JETTON_TRANSFER_GAS) ;; Use only constant, not user input\n            .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)\n            .store_ref(msg_body)\n            .end_cell();",
+              "startLine": 30,
+              "endLine": 36,
+              "changeDescription": "Removed user-controlled forward_ton_amount from message value calculation. Added validation to limit forward_ton_amount to a safe maximum. The forward_ton_amount is now only used in the payload (msg_body), not in the message value itself. This prevents attackers from controlling the TON amount sent with the message.",
+              "function": "recv_internal"
+            }
+          },
+          {
+            "id": "CRIT-002",
+            "severity": "CRITICAL",
+            "category": "User Input Misuse",
+            "title": "User-Controlled Amount in Jetton Transfer Payload",
+            "description": "Line 22 uses user-controlled 'amount' value directly in .store_coins() within the jetton transfer message body. An attacker can specify arbitrary jetton amounts to transfer, potentially draining jetton balances.",
+            "impact": "Attackers can specify arbitrary jetton amounts to withdraw, potentially draining all jettons from the contract. This represents a complete loss of jetton funds.",
+            "recommendation": "Add validation to ensure the amount doesn't exceed available balance or implement a maximum withdrawal limit. Consider adding access control to restrict who can initiate withdrawals.",
+            "codeChanges": {
+              "vulnerableCode": "        var msg_body = begin_cell()\n            .store_op_and_query_id(op::transfer, query_id)\n            .store_coins(amount)\n            .store_slice(to_address)",
+              "fixedCode": "        ;; Validate amount to prevent excessive withdrawals\n        throw_unless(402, amount > 0);\n        throw_unless(403, amount <= 1000000000000); ;; Max 1000 jettons (assuming 9 decimals)\n        \n        var msg_body = begin_cell()\n            .store_op_and_query_id(op::transfer, query_id)\n            .store_coins(amount)\n            .store_slice(to_address)",
+              "startLine": 20,
+              "endLine": 23,
+              "changeDescription": "Added validation checks to ensure amount is positive and doesn't exceed a reasonable maximum. While the amount is still user-provided (as required for withdrawal functionality), the validation prevents extreme values that could drain the contract. Additional access control should be implemented separately.",
+              "function": "recv_internal"
+            }
+          },
+          {
+            "id": "CRIT-003",
+            "severity": "CRITICAL",
+            "category": "User Input Misuse",
+            "title": "User-Controlled Forward TON Amount in Payload",
+            "description": "Line 26 uses user-controlled 'forward_ton_amount' directly in .store_coins() within the jetton transfer payload. While this is in the payload (not message value), it still allows users to specify arbitrary forward amounts that could affect the receiving contract's behavior.",
+            "impact": "Users can specify arbitrary forward_ton_amount values in the jetton transfer notification. This could be exploited to manipulate receiving contract logic that depends on forward amounts, or to cause unexpected behavior in jetton wallets.",
+            "recommendation": "Validate forward_ton_amount to ensure it's within acceptable bounds. Consider using a fixed or calculated value instead of allowing arbitrary user input.",
+            "codeChanges": {
+              "vulnerableCode": "            .store_uint(0, 1)\n            .store_coins(forward_ton_amount)\n            .store_maybe_ref(forward_payload)",
+              "fixedCode": "            .store_uint(0, 1)\n            .store_coins(forward_ton_amount) ;; Already validated above\n            .store_maybe_ref(forward_payload)",
+              "startLine": 25,
+              "endLine": 27,
+              "changeDescription": "The forward_ton_amount validation added in CRIT-001 fix also protects this usage. The value is now validated to be <= 0.1 TON before being used anywhere in the code.",
+              "function": "recv_internal"
+            }
+          },
+          {
+            "id": "CRIT-004",
+            "severity": "CRITICAL",
+            "category": "Undefined Variable",
+            "title": "Undefined Variable 'ref' in Message Construction",
+            "description": "Line 35 references an undefined variable 'ref' in .store_ref(ref). This variable is never declared or assigned in the code. The correct variable should be 'msg_body' which was constructed earlier. This would cause a compilation error.",
+            "impact": "The contract will not compile due to the undefined variable reference. This is a critical bug that prevents deployment. If somehow deployed, it would cause runtime errors.",
+            "recommendation": "Replace 'ref' with 'msg_body' to reference the correctly constructed message body.",
+            "codeChanges": {
+              "vulnerableCode": "            .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)\n            .store_ref(ref)\n            .end_cell();",
+              "fixedCode": "            .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)\n            .store_ref(msg_body)\n            .end_cell();",
+              "startLine": 34,
+              "endLine": 36,
+              "changeDescription": "Replaced undefined variable 'ref' with the correct variable 'msg_body' that was constructed earlier in the function. This fixes the compilation error and ensures the message body is properly attached to the message.",
+              "function": "recv_internal"
+            }
+          },
+          {
+            "id": "HIGH-001",
+            "severity": "HIGH",
+            "category": "Access Control",
+            "title": "Missing Access Control on Withdraw Operation",
+            "description": "The withdraw operation (op == op::withdraw) lacks any access control checks. Any external address can call this function and initiate withdrawals to arbitrary addresses. There's no verification of sender_address against an owner or authorized list.",
+            "impact": "Any user can trigger withdrawal operations, potentially draining funds if combined with other vulnerabilities. This completely bypasses any intended authorization mechanism.",
+            "recommendation": "Implement access control by checking the sender_address against an authorized owner or admin address stored in contract storage. Only allow authorized addresses to perform withdrawals.",
+            "codeChanges": {
+              "vulnerableCode": "    if (op == op::withdraw) {\n        int amount = in_msg_body~load_coins();",
+              "fixedCode": "    if (op == op::withdraw) {\n        ;; Load owner address from storage for access control\n        slice ds = get_data().begin_parse();\n        slice owner_address = ds~load_msg_addr();\n        \n        ;; Verify sender is authorized\n        throw_unless(404, equal_slices(sender_address, owner_address));\n        \n        int amount = in_msg_body~load_coins();",
+              "startLine": 14,
+              "endLine": 15,
+              "changeDescription": "Added access control check to verify that the sender is the contract owner before allowing withdrawal operations. The owner address should be stored in contract data during initialization. This prevents unauthorized users from triggering withdrawals.",
+              "function": "recv_internal"
+            }
+          },
+          {
+            "id": "LOW-001",
+            "severity": "LOW",
+            "category": "Code Quality",
+            "title": "Missing Constants Definition",
+            "description": "The code references undefined constants: USDT_WALLET_ADDRESS, JETTON_TRANSFER_GAS, op::withdraw, and op::transfer. These should be defined in the imports or at the top of the contract. While this may be intentional (defined in imports/stdlib.fc), it's not verifiable from the provided code.",
+            "impact": "If these constants are not properly defined in imports, the contract will fail to compile. This reduces code clarity and makes the contract harder to audit.",
+            "recommendation": "Ensure all constants are properly defined in imports/stdlib.fc or define them explicitly in the contract. Add comments indicating where these constants are defined for better code documentation.",
+            "codeChanges": {
+              "vulnerableCode": "#include \"imports/stdlib.fc\"\n\n() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {",
+              "fixedCode": "#include \"imports/stdlib.fc\"\n\n;; Constants should be defined in imports/stdlib.fc:\n;; const slice USDT_WALLET_ADDRESS\n;; const int JETTON_TRANSFER_GAS\n;; const int op::withdraw\n;; const int op::transfer\n\n() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {",
+              "startLine": 1,
+              "endLine": 3,
+              "changeDescription": "Added documentation comments indicating which constants should be defined in the imports file. This improves code clarity and makes it easier for auditors to verify that all dependencies are properly defined.",
+              "function": "N/A"
+            }
+          }
+        ],
+        "completeCodeComparison": {
+          "hasChanges": true,
+          "original": "#include \"imports/stdlib.fc\"\n\n() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    ;; ignore all bounced messages\n    if (is_bounced?(flags)) {\n        return ();\n    }\n    slice sender_address = cs~load_msg_addr();\n\n    (int op, int query_id) = in_msg_body~load_op_and_query_id();\n\n    if (op == op::withdraw) {\n        int amount = in_msg_body~load_coins();\n        slice to_address = in_msg_body~load_msg_addr();\n        int forward_ton_amount = in_msg_body~load_coins();\n        cell forward_payload = begin_cell().store_slice(in_msg_body).end_cell();\n\n        var msg_body = begin_cell()\n            .store_op_and_query_id(op::transfer, query_id)\n            .store_coins(amount)\n            .store_slice(to_address)\n            .store_slice(to_address)\n            .store_uint(0, 1)\n            .store_coins(forward_ton_amount)\n            .store_maybe_ref(forward_payload)\n            .end_cell();\n\n        cell msg = begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(USDT_WALLET_ADDRESS)\n            .store_coins(JETTON_TRANSFER_GAS + forward_ton_amount)\n            .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)\n            .store_ref(ref)\n            .end_cell();\n\n        send_raw_message(msg, 0);\n\n        return ();\n    }\n}",
+          "corrected": "#include \"imports/stdlib.fc\"\n\n;; Constants should be defined in imports/stdlib.fc:\n;; const slice USDT_WALLET_ADDRESS\n;; const int JETTON_TRANSFER_GAS\n;; const int op::withdraw\n;; const int op::transfer\n\n() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    ;; ignore all bounced messages\n    if (is_bounced?(flags)) {\n        return ();\n    }\n    slice sender_address = cs~load_msg_addr();\n\n    (int op, int query_id) = in_msg_body~load_op_and_query_id();\n\n    if (op == op::withdraw) {\n        ;; Load owner address from storage for access control\n        slice ds = get_data().begin_parse();\n        slice owner_address = ds~load_msg_addr();\n        \n        ;; Verify sender is authorized\n        throw_unless(404, equal_slices(sender_address, owner_address));\n        \n        int amount = in_msg_body~load_coins();\n        slice to_address = in_msg_body~load_msg_addr();\n        int forward_ton_amount = in_msg_body~load_coins();\n        cell forward_payload = begin_cell().store_slice(in_msg_body).end_cell();\n\n        ;; Validate amount to prevent excessive withdrawals\n        throw_unless(402, amount > 0);\n        throw_unless(403, amount <= 1000000000000); ;; Max 1000 jettons (assuming 9 decimals)\n        \n        ;; Validate forward_ton_amount to prevent excessive values\n        throw_unless(401, forward_ton_amount <= 100000000); ;; Max 0.1 TON\n\n        var msg_body = begin_cell()\n            .store_op_and_query_id(op::transfer, query_id)\n            .store_coins(amount)\n            .store_slice(to_address)\n            .store_slice(to_address)\n            .store_uint(0, 1)\n            .store_coins(forward_ton_amount) ;; Already validated above\n            .store_maybe_ref(forward_payload)\n            .end_cell();\n\n        cell msg = begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(USDT_WALLET_ADDRESS)\n            .store_coins(JETTON_TRANSFER_GAS) ;; Use only constant, not user input\n            .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)\n            .store_ref(msg_body)\n            .end_cell();\n\n        send_raw_message(msg, 0);\n\n        return ();\n    }\n}",
+          "changesExplanation": "Applied all critical and high severity fixes: (1) Removed user-controlled forward_ton_amount from message value calculation, using only JETTON_TRANSFER_GAS constant. (2) Added validation for amount and forward_ton_amount to prevent excessive values. (3) Fixed undefined variable 'ref' to 'msg_body'. (4) Added access control check to verify sender is contract owner before allowing withdrawals. (5) Added documentation comments for constants. These changes eliminate all critical fund loss vulnerabilities and prevent unauthorized access."
+        },
+        "recommendations": [
+          {
+            "priority": "High",
+            "title": "Implement Proper Storage Management",
+            "description": "The contract needs proper storage initialization and management to store the owner address. Implement get_data() and set_data() operations to persist the owner address.",
+            "rationale": "The access control fix requires reading the owner address from storage. Without proper storage management, the contract cannot enforce authorization."
+          },
+          {
+            "priority": "High",
+            "title": "Add Balance Checks",
+            "description": "Before processing withdrawals, verify that the contract has sufficient jetton balance to fulfill the withdrawal request. Query the jetton wallet balance and compare against the requested amount.",
+            "rationale": "Prevents withdrawal requests that exceed available balance, which would fail anyway but waste gas and provide poor user experience."
+          },
+          {
+            "priority": "High",
+            "title": "Implement Emergency Stop Mechanism",
+            "description": "Add a pause/unpause functionality that allows the owner to temporarily disable withdrawals in case of detected attacks or vulnerabilities.",
+            "rationale": "Provides a safety mechanism to protect funds if vulnerabilities are discovered after deployment."
+          },
+          {
+            "priority": "Medium",
+            "title": "Add Event Logging",
+            "description": "Emit events for withdrawal operations to enable off-chain monitoring and auditing of contract activity.",
+            "rationale": "Improves transparency and enables detection of suspicious activity patterns."
+          },
+          {
+            "priority": "Medium",
+            "title": "Implement Rate Limiting",
+            "description": "Add rate limiting to prevent rapid successive withdrawals that could drain the contract quickly if access control is compromised.",
+            "rationale": "Provides defense in depth by limiting the speed at which funds can be extracted even if other security measures fail."
+          }
+        ],
+        "gasOptimizations": [
+          {
+            "location": "Lines 4-9",
+            "description": "The bounce check could be optimized by using bitwise operations instead of function call. Replace 'is_bounced?(flags)' with '(flags & 1)' for direct bit checking.",
+            "estimatedGasSavings": "~50 gas units per message"
+          },
+          {
+            "location": "Lines 20-28",
+            "description": "The msg_body construction could be optimized by pre-calculating the builder size and using store_builder instead of multiple store operations where applicable.",
+            "estimatedGasSavings": "~100-200 gas units per withdrawal"
+          }
+        ],
+        "codeQualityObservations": [
+          {
+            "description": "The contract lacks comprehensive error handling. Consider adding more specific error codes for different failure scenarios (invalid amount, insufficient balance, etc.)."
+          },
+          {
+            "description": "Missing documentation comments. Add NatSpec-style comments to describe function parameters, return values, and expected behavior."
+          },
+          {
+            "description": "The contract doesn't handle the case where op is not op::withdraw. Consider adding an else clause or default handler for unknown operations."
+          },
+          {
+            "description": "Constants like JETTON_TRANSFER_GAS should be documented with their expected values and units (e.g., '0.05 TON for jetton transfer gas')."
+          }
+        ],
+        "positiveFindings": [
+          {
+            "aspect": "Bounce Handling",
+            "description": "The contract properly checks for and ignores bounced messages at the beginning of recv_internal, preventing bounce loops."
+          },
+          {
+            "aspect": "Message Parsing",
+            "description": "The contract correctly parses the incoming message structure, extracting flags and sender address in the proper order."
+          },
+          {
+            "aspect": "Impure Declaration",
+            "description": "The recv_internal function is correctly marked as 'impure', which is necessary for functions that modify state or send messages."
+          }
+        ],
+        "nextSteps": "IMMEDIATE ACTION REQUIRED: Do not deploy this contract in its current state. Apply all critical fixes, particularly: (1) Remove user-controlled values from message value calculations, (2) Implement access control for withdrawals, (3) Fix the undefined 'ref' variable, (4) Add input validation for all user-provided amounts. After applying fixes, conduct thorough testing including: withdrawal attempts with various amounts, unauthorized access attempts, edge cases with maximum values, and gas consumption analysis. Consider a professional security audit before mainnet deployment given the severity of the original vulnerabilities.",
+        "proposedCodeComplete": "#include \"imports/stdlib.fc\"\n\n;; Constants should be defined in imports/stdlib.fc:\n;; const slice USDT_WALLET_ADDRESS\n;; const int JETTON_TRANSFER_GAS\n;; const int op::withdraw\n;; const int op::transfer\n\n() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    ;; ignore all bounced messages\n    if (is_bounced?(flags)) {\n        return ();\n    }\n    slice sender_address = cs~load_msg_addr();\n\n    (int op, int query_id) = in_msg_body~load_op_and_query_id();\n\n    if (op == op::withdraw) {\n        ;; Load owner address from storage for access control\n        slice ds = get_data().begin_parse();\n        slice owner_address = ds~load_msg_addr();\n        \n        ;; Verify sender is authorized\n        throw_unless(404, equal_slices(sender_address, owner_address));\n        \n        int amount = in_msg_body~load_coins();\n        slice to_address = in_msg_body~load_msg_addr();\n        int forward_ton_amount = in_msg_body~load_coins();\n        cell forward_payload = begin_cell().store_slice(in_msg_body).end_cell();\n\n        ;; Validate amount to prevent excessive withdrawals\n        throw_unless(402, amount > 0);\n        throw_unless(403, amount <= 1000000000000); ;; Max 1000 jettons (assuming 9 decimals)\n        \n        ;; Validate forward_ton_amount to prevent excessive values\n        throw_unless(401, forward_ton_amount <= 100000000); ;; Max 0.1 TON\n\n        var msg_body = begin_cell()\n            .store_op_and_query_id(op::transfer, query_id)\n            .store_coins(amount)\n            .store_slice(to_address)\n            .store_slice(to_address)\n            .store_uint(0, 1)\n            .store_coins(forward_ton_amount) ;; Already validated above\n            .store_maybe_ref(forward_payload)\n            .end_cell();\n\n        cell msg = begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(USDT_WALLET_ADDRESS)\n            .store_coins(JETTON_TRANSFER_GAS) ;; Use only constant, not user input\n            .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)\n            .store_ref(msg_body)\n            .end_cell();\n\n        send_raw_message(msg, 0);\n\n        return ();\n    }\n}"
+      }
+    },
+    {
+      "capturedAt": "2026-03-14T19:06:10.523Z",
+      "provider": "FunC",
+      "contractFile": "forward_ton_demo.func",
+      "response": {
+        "analysisMetadata": {
+          "contractName": "forward_ton_demo",
+          "language": "FunC",
+          "linesOfCode": 43,
+          "analysisDate": "2025-01-10T00:00:00Z",
+          "analysisTimestamp": "2025-01-10T00:00:00Z",
+          "totalIssuesFound": 6
+        },
+        "securityScore": 10,
+        "grade": "F",
+        "executiveSummary": "The contract contains CRITICAL vulnerabilities that allow attackers to drain funds and manipulate message values. Multiple user-controlled values are used in .store_coins() operations without validation, enabling attackers to specify arbitrary TON amounts. The contract lacks access control, allowing anyone to trigger withdrawals. Additionally, there's a critical undefined variable reference that would prevent compilation. These issues pose immediate and severe risks to fund security.",
+        "findingsSummary": {
+          "critical": 4,
+          "high": 1,
+          "medium": 0,
+          "low": 1,
+          "informational": 0,
+          "totalFindings": 6
+        },
+        "findings": [
+          {
+            "id": "CRIT-001",
+            "severity": "CRITICAL",
+            "category": "User Input Misuse",
+            "title": "User-Controlled Amount in Message Value",
+            "description": "Line 33 uses user-controlled 'amount' and 'forward_ton_amount' values directly in .store_coins() for the message value. An attacker can specify arbitrary amounts, potentially draining the contract or causing unexpected behavior. The expression 'JETTON_TRANSFER_GAS + forward_ton_amount' combines a constant with user input, making the total message value attacker-controlled.",
+            "impact": "Attackers can specify arbitrary TON amounts to be sent with messages, potentially draining contract funds or causing DoS by specifying amounts exceeding contract balance. This is a direct fund loss vulnerability.",
+            "recommendation": "Replace user-controlled values in message value with validated constants. Move forward_ton_amount to the payload only, not the message value. Use a fixed, safe amount for message value.",
+            "codeChanges": {
+              "vulnerableCode": "        cell msg = begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(USDT_WALLET_ADDRESS)\n            .store_coins(JETTON_TRANSFER_GAS + forward_ton_amount)\n            .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)\n            .store_ref(ref)\n            .end_cell();",
+              "fixedCode": "        ;; Validate forward_ton_amount to prevent excessive values\n        throw_unless(401, forward_ton_amount <= 100000000); ;; Max 0.1 TON\n        \n        cell msg = begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(USDT_WALLET_ADDRESS)\n            .store_coins(JETTON_TRANSFER_GAS) ;; Use only constant, not user input\n            .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)\n            .store_ref(msg_body)\n            .end_cell();",
+              "startLine": 30,
+              "endLine": 36,
+              "changeDescription": "Removed user-controlled forward_ton_amount from message value calculation. Added validation to limit forward_ton_amount to a safe maximum. The forward_ton_amount is now only used in the payload (msg_body), not in the message value itself. This prevents attackers from controlling the TON amount sent with the message.",
+              "function": "recv_internal"
+            }
+          },
+          {
+            "id": "CRIT-002",
+            "severity": "CRITICAL",
+            "category": "User Input Misuse",
+            "title": "User-Controlled Amount in Jetton Transfer Payload",
+            "description": "Line 22 uses user-controlled 'amount' value directly in .store_coins() within the jetton transfer message body. An attacker can specify arbitrary jetton amounts to transfer, potentially draining jetton balances.",
+            "impact": "Attackers can specify arbitrary jetton amounts to withdraw, potentially draining all jettons from the contract. This represents a complete loss of jetton funds.",
+            "recommendation": "Add validation to ensure the amount doesn't exceed available balance or implement a maximum withdrawal limit. Consider adding access control to restrict who can initiate withdrawals.",
+            "codeChanges": {
+              "vulnerableCode": "        var msg_body = begin_cell()\n            .store_op_and_query_id(op::transfer, query_id)\n            .store_coins(amount)\n            .store_slice(to_address)",
+              "fixedCode": "        ;; Validate amount to prevent excessive withdrawals\n        throw_unless(402, amount > 0);\n        throw_unless(403, amount <= 1000000000000); ;; Max 1000 jettons (assuming 9 decimals)\n        \n        var msg_body = begin_cell()\n            .store_op_and_query_id(op::transfer, query_id)\n            .store_coins(amount)\n            .store_slice(to_address)",
+              "startLine": 20,
+              "endLine": 23,
+              "changeDescription": "Added validation checks to ensure amount is positive and doesn't exceed a reasonable maximum. While the amount is still user-provided (as required for withdrawal functionality), the validation prevents extreme values that could drain the contract. Additional access control should be implemented separately.",
+              "function": "recv_internal"
+            }
+          },
+          {
+            "id": "CRIT-003",
+            "severity": "CRITICAL",
+            "category": "User Input Misuse",
+            "title": "User-Controlled Forward TON Amount in Payload",
+            "description": "Line 26 uses user-controlled 'forward_ton_amount' directly in .store_coins() within the jetton transfer payload. While this is in the payload (not message value), it still allows users to specify arbitrary forward amounts that could affect the receiving contract's behavior.",
+            "impact": "Users can specify arbitrary forward_ton_amount values in the jetton transfer notification. This could be exploited to manipulate receiving contract logic that depends on forward amounts, or to cause unexpected behavior in jetton wallets.",
+            "recommendation": "Validate forward_ton_amount to ensure it's within acceptable bounds. Consider using a fixed or calculated value instead of allowing arbitrary user input.",
+            "codeChanges": {
+              "vulnerableCode": "            .store_uint(0, 1)\n            .store_coins(forward_ton_amount)\n            .store_maybe_ref(forward_payload)",
+              "fixedCode": "            .store_uint(0, 1)\n            .store_coins(forward_ton_amount) ;; Already validated above\n            .store_maybe_ref(forward_payload)",
+              "startLine": 25,
+              "endLine": 27,
+              "changeDescription": "The forward_ton_amount validation added in CRIT-001 fix also protects this usage. The value is now validated to be <= 0.1 TON before being used anywhere in the code.",
+              "function": "recv_internal"
+            }
+          },
+          {
+            "id": "CRIT-004",
+            "severity": "CRITICAL",
+            "category": "Undefined Variable",
+            "title": "Undefined Variable 'ref' in Message Construction",
+            "description": "Line 35 references an undefined variable 'ref' in .store_ref(ref). This variable is never declared or assigned in the code. The correct variable should be 'msg_body' which was constructed earlier. This would cause a compilation error.",
+            "impact": "The contract will not compile due to the undefined variable reference. This is a critical bug that prevents deployment. If somehow deployed, it would cause runtime errors.",
+            "recommendation": "Replace 'ref' with 'msg_body' to reference the correctly constructed message body.",
+            "codeChanges": {
+              "vulnerableCode": "            .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)\n            .store_ref(ref)\n            .end_cell();",
+              "fixedCode": "            .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)\n            .store_ref(msg_body)\n            .end_cell();",
+              "startLine": 34,
+              "endLine": 36,
+              "changeDescription": "Replaced undefined variable 'ref' with the correct variable 'msg_body' that was constructed earlier in the function. This fixes the compilation error and ensures the message body is properly attached to the message.",
+              "function": "recv_internal"
+            }
+          },
+          {
+            "id": "HIGH-001",
+            "severity": "HIGH",
+            "category": "Access Control",
+            "title": "Missing Access Control on Withdraw Operation",
+            "description": "The withdraw operation (op == op::withdraw) lacks any access control checks. Any external address can call this function and initiate withdrawals to arbitrary addresses. There's no verification of sender_address against an owner or authorized list.",
+            "impact": "Any user can trigger withdrawal operations, potentially draining funds if combined with other vulnerabilities. This completely bypasses any intended authorization mechanism.",
+            "recommendation": "Implement access control by checking the sender_address against an authorized owner or admin address stored in contract storage. Only allow authorized addresses to perform withdrawals.",
+            "codeChanges": {
+              "vulnerableCode": "    if (op == op::withdraw) {\n        int amount = in_msg_body~load_coins();",
+              "fixedCode": "    if (op == op::withdraw) {\n        ;; Load owner address from storage for access control\n        slice ds = get_data().begin_parse();\n        slice owner_address = ds~load_msg_addr();\n        \n        ;; Verify sender is authorized\n        throw_unless(404, equal_slices(sender_address, owner_address));\n        \n        int amount = in_msg_body~load_coins();",
+              "startLine": 14,
+              "endLine": 15,
+              "changeDescription": "Added access control check to verify that the sender is the contract owner before allowing withdrawal operations. The owner address should be stored in contract data during initialization. This prevents unauthorized users from triggering withdrawals.",
+              "function": "recv_internal"
+            }
+          },
+          {
+            "id": "LOW-001",
+            "severity": "LOW",
+            "category": "Code Quality",
+            "title": "Missing Constants Definition",
+            "description": "The code references undefined constants: USDT_WALLET_ADDRESS, JETTON_TRANSFER_GAS, op::withdraw, and op::transfer. These should be defined in the imports or at the top of the contract. While this may be intentional (defined in imports/stdlib.fc), it's not verifiable from the provided code.",
+            "impact": "If these constants are not properly defined in imports, the contract will fail to compile. This reduces code clarity and makes the contract harder to audit.",
+            "recommendation": "Ensure all constants are properly defined in imports/stdlib.fc or define them explicitly in the contract. Add comments indicating where these constants are defined for better code documentation.",
+            "codeChanges": {
+              "vulnerableCode": "#include \"imports/stdlib.fc\"\n\n() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {",
+              "fixedCode": "#include \"imports/stdlib.fc\"\n\n;; Constants should be defined in imports/stdlib.fc:\n;; const slice USDT_WALLET_ADDRESS\n;; const int JETTON_TRANSFER_GAS\n;; const int op::withdraw\n;; const int op::transfer\n\n() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {",
+              "startLine": 1,
+              "endLine": 3,
+              "changeDescription": "Added documentation comments indicating which constants should be defined in the imports file. This improves code clarity and makes it easier for auditors to verify that all dependencies are properly defined.",
+              "function": "N/A"
+            }
+          }
+        ],
+        "completeCodeComparison": {
+          "hasChanges": true,
+          "original": "#include \"imports/stdlib.fc\"\n\n() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    ;; ignore all bounced messages\n    if (is_bounced?(flags)) {\n        return ();\n    }\n    slice sender_address = cs~load_msg_addr();\n\n    (int op, int query_id) = in_msg_body~load_op_and_query_id();\n\n    if (op == op::withdraw) {\n        int amount = in_msg_body~load_coins();\n        slice to_address = in_msg_body~load_msg_addr();\n        int forward_ton_amount = in_msg_body~load_coins();\n        cell forward_payload = begin_cell().store_slice(in_msg_body).end_cell();\n\n        var msg_body = begin_cell()\n            .store_op_and_query_id(op::transfer, query_id)\n            .store_coins(amount)\n            .store_slice(to_address)\n            .store_slice(to_address)\n            .store_uint(0, 1)\n            .store_coins(forward_ton_amount)\n            .store_maybe_ref(forward_payload)\n            .end_cell();\n\n        cell msg = begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(USDT_WALLET_ADDRESS)\n            .store_coins(JETTON_TRANSFER_GAS + forward_ton_amount)\n            .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)\n            .store_ref(ref)\n            .end_cell();\n\n        send_raw_message(msg, 0);\n\n        return ();\n    }\n}",
+          "corrected": "#include \"imports/stdlib.fc\"\n\n;; Constants should be defined in imports/stdlib.fc:\n;; const slice USDT_WALLET_ADDRESS\n;; const int JETTON_TRANSFER_GAS\n;; const int op::withdraw\n;; const int op::transfer\n\n() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    ;; ignore all bounced messages\n    if (is_bounced?(flags)) {\n        return ();\n    }\n    slice sender_address = cs~load_msg_addr();\n\n    (int op, int query_id) = in_msg_body~load_op_and_query_id();\n\n    if (op == op::withdraw) {\n        ;; Load owner address from storage for access control\n        slice ds = get_data().begin_parse();\n        slice owner_address = ds~load_msg_addr();\n        \n        ;; Verify sender is authorized\n        throw_unless(404, equal_slices(sender_address, owner_address));\n        \n        int amount = in_msg_body~load_coins();\n        slice to_address = in_msg_body~load_msg_addr();\n        int forward_ton_amount = in_msg_body~load_coins();\n        cell forward_payload = begin_cell().store_slice(in_msg_body).end_cell();\n\n        ;; Validate amount to prevent excessive withdrawals\n        throw_unless(402, amount > 0);\n        throw_unless(403, amount <= 1000000000000); ;; Max 1000 jettons (assuming 9 decimals)\n        \n        ;; Validate forward_ton_amount to prevent excessive values\n        throw_unless(401, forward_ton_amount <= 100000000); ;; Max 0.1 TON\n\n        var msg_body = begin_cell()\n            .store_op_and_query_id(op::transfer, query_id)\n            .store_coins(amount)\n            .store_slice(to_address)\n            .store_slice(to_address)\n            .store_uint(0, 1)\n            .store_coins(forward_ton_amount) ;; Already validated above\n            .store_maybe_ref(forward_payload)\n            .end_cell();\n\n        cell msg = begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(USDT_WALLET_ADDRESS)\n            .store_coins(JETTON_TRANSFER_GAS) ;; Use only constant, not user input\n            .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)\n            .store_ref(msg_body)\n            .end_cell();\n\n        send_raw_message(msg, 0);\n\n        return ();\n    }\n}",
+          "changesExplanation": "Applied all critical and high severity fixes: (1) Removed user-controlled forward_ton_amount from message value calculation, using only JETTON_TRANSFER_GAS constant. (2) Added validation for amount and forward_ton_amount to prevent excessive values. (3) Fixed undefined variable 'ref' to 'msg_body'. (4) Added access control check to verify sender is contract owner before allowing withdrawals. (5) Added documentation comments for constants. These changes eliminate all critical fund loss vulnerabilities and prevent unauthorized access."
+        },
+        "recommendations": [
+          {
+            "priority": "High",
+            "title": "Implement Proper Storage Management",
+            "description": "The contract needs proper storage initialization and management to store the owner address. Implement get_data() and set_data() operations to persist the owner address.",
+            "rationale": "The access control fix requires reading the owner address from storage. Without proper storage management, the contract cannot enforce authorization."
+          },
+          {
+            "priority": "High",
+            "title": "Add Balance Checks",
+            "description": "Before processing withdrawals, verify that the contract has sufficient jetton balance to fulfill the withdrawal request. Query the jetton wallet balance and compare against the requested amount.",
+            "rationale": "Prevents withdrawal requests that exceed available balance, which would fail anyway but waste gas and provide poor user experience."
+          },
+          {
+            "priority": "High",
+            "title": "Implement Emergency Stop Mechanism",
+            "description": "Add a pause/unpause functionality that allows the owner to temporarily disable withdrawals in case of detected attacks or vulnerabilities.",
+            "rationale": "Provides a safety mechanism to protect funds if vulnerabilities are discovered after deployment."
+          },
+          {
+            "priority": "Medium",
+            "title": "Add Event Logging",
+            "description": "Emit events for withdrawal operations to enable off-chain monitoring and auditing of contract activity.",
+            "rationale": "Improves transparency and enables detection of suspicious activity patterns."
+          },
+          {
+            "priority": "Medium",
+            "title": "Implement Rate Limiting",
+            "description": "Add rate limiting to prevent rapid successive withdrawals that could drain the contract quickly if access control is compromised.",
+            "rationale": "Provides defense in depth by limiting the speed at which funds can be extracted even if other security measures fail."
+          }
+        ],
+        "gasOptimizations": [
+          {
+            "location": "Lines 4-9",
+            "description": "The bounce check could be optimized by using bitwise operations instead of function call. Replace 'is_bounced?(flags)' with '(flags & 1)' for direct bit checking.",
+            "estimatedGasSavings": "~50 gas units per message"
+          },
+          {
+            "location": "Lines 20-28",
+            "description": "The msg_body construction could be optimized by pre-calculating the builder size and using store_builder instead of multiple store operations where applicable.",
+            "estimatedGasSavings": "~100-200 gas units per withdrawal"
+          }
+        ],
+        "codeQualityObservations": [
+          {
+            "description": "The contract lacks comprehensive error handling. Consider adding more specific error codes for different failure scenarios (invalid amount, insufficient balance, etc.)."
+          },
+          {
+            "description": "Missing documentation comments. Add NatSpec-style comments to describe function parameters, return values, and expected behavior."
+          },
+          {
+            "description": "The contract doesn't handle the case where op is not op::withdraw. Consider adding an else clause or default handler for unknown operations."
+          },
+          {
+            "description": "Constants like JETTON_TRANSFER_GAS should be documented with their expected values and units (e.g., '0.05 TON for jetton transfer gas')."
+          }
+        ],
+        "positiveFindings": [
+          {
+            "aspect": "Bounce Handling",
+            "description": "The contract properly checks for and ignores bounced messages at the beginning of recv_internal, preventing bounce loops."
+          },
+          {
+            "aspect": "Message Parsing",
+            "description": "The contract correctly parses the incoming message structure, extracting flags and sender address in the proper order."
+          },
+          {
+            "aspect": "Impure Declaration",
+            "description": "The recv_internal function is correctly marked as 'impure', which is necessary for functions that modify state or send messages."
+          }
+        ],
+        "nextSteps": "IMMEDIATE ACTION REQUIRED: Do not deploy this contract in its current state. Apply all critical fixes, particularly: (1) Remove user-controlled values from message value calculations, (2) Implement access control for withdrawals, (3) Fix the undefined 'ref' variable, (4) Add input validation for all user-provided amounts. After applying fixes, conduct thorough testing including: withdrawal attempts with various amounts, unauthorized access attempts, edge cases with maximum values, and gas consumption analysis. Consider a professional security audit before mainnet deployment given the severity of the original vulnerabilities.",
+        "proposedCodeComplete": "#include \"imports/stdlib.fc\"\n\n;; Constants should be defined in imports/stdlib.fc:\n;; const slice USDT_WALLET_ADDRESS\n;; const int JETTON_TRANSFER_GAS\n;; const int op::withdraw\n;; const int op::transfer\n\n() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    ;; ignore all bounced messages\n    if (is_bounced?(flags)) {\n        return ();\n    }\n    slice sender_address = cs~load_msg_addr();\n\n    (int op, int query_id) = in_msg_body~load_op_and_query_id();\n\n    if (op == op::withdraw) {\n        ;; Load owner address from storage for access control\n        slice ds = get_data().begin_parse();\n        slice owner_address = ds~load_msg_addr();\n        \n        ;; Verify sender is authorized\n        throw_unless(404, equal_slices(sender_address, owner_address));\n        \n        int amount = in_msg_body~load_coins();\n        slice to_address = in_msg_body~load_msg_addr();\n        int forward_ton_amount = in_msg_body~load_coins();\n        cell forward_payload = begin_cell().store_slice(in_msg_body).end_cell();\n\n        ;; Validate amount to prevent excessive withdrawals\n        throw_unless(402, amount > 0);\n        throw_unless(403, amount <= 1000000000000); ;; Max 1000 jettons (assuming 9 decimals)\n        \n        ;; Validate forward_ton_amount to prevent excessive values\n        throw_unless(401, forward_ton_amount <= 100000000); ;; Max 0.1 TON\n\n        var msg_body = begin_cell()\n            .store_op_and_query_id(op::transfer, query_id)\n            .store_coins(amount)\n            .store_slice(to_address)\n            .store_slice(to_address)\n            .store_uint(0, 1)\n            .store_coins(forward_ton_amount) ;; Already validated above\n            .store_maybe_ref(forward_payload)\n            .end_cell();\n\n        cell msg = begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(USDT_WALLET_ADDRESS)\n            .store_coins(JETTON_TRANSFER_GAS) ;; Use only constant, not user input\n            .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)\n            .store_ref(msg_body)\n            .end_cell();\n\n        send_raw_message(msg, 0);\n\n        return ();\n    }\n}"
+      }
+    },
+    {
+      "capturedAt": "2026-03-14T19:06:10.528Z",
+      "provider": "FunC",
+      "contractFile": "forward_ton_demo.func",
+      "response": {
+        "analysisMetadata": {
+          "contractName": "forward_ton_demo",
+          "language": "FunC",
+          "linesOfCode": 43,
+          "analysisDate": "2025-01-10T00:00:00Z",
+          "analysisTimestamp": "2025-01-10T00:00:00Z",
+          "totalIssuesFound": 6
+        },
+        "securityScore": 10,
+        "grade": "F",
+        "executiveSummary": "The contract contains CRITICAL vulnerabilities that allow attackers to drain funds and manipulate message values. Multiple user-controlled values are used in .store_coins() operations without validation, enabling attackers to specify arbitrary TON amounts. The contract lacks access control, allowing anyone to trigger withdrawals. Additionally, there's a critical undefined variable reference that would prevent compilation. These issues pose immediate and severe risks to fund security.",
+        "findingsSummary": {
+          "critical": 4,
+          "high": 1,
+          "medium": 0,
+          "low": 1,
+          "informational": 0,
+          "totalFindings": 6
+        },
+        "findings": [
+          {
+            "id": "CRIT-001",
+            "severity": "CRITICAL",
+            "category": "User Input Misuse",
+            "title": "User-Controlled Amount in Message Value",
+            "description": "Line 33 uses user-controlled 'amount' and 'forward_ton_amount' values directly in .store_coins() for the message value. An attacker can specify arbitrary amounts, potentially draining the contract or causing unexpected behavior. The expression 'JETTON_TRANSFER_GAS + forward_ton_amount' combines a constant with user input, making the total message value attacker-controlled.",
+            "impact": "Attackers can specify arbitrary TON amounts to be sent with messages, potentially draining contract funds or causing DoS by specifying amounts exceeding contract balance. This is a direct fund loss vulnerability.",
+            "recommendation": "Replace user-controlled values in message value with validated constants. Move forward_ton_amount to the payload only, not the message value. Use a fixed, safe amount for message value.",
+            "codeChanges": {
+              "vulnerableCode": "        cell msg = begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(USDT_WALLET_ADDRESS)\n            .store_coins(JETTON_TRANSFER_GAS + forward_ton_amount)\n            .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)\n            .store_ref(ref)\n            .end_cell();",
+              "fixedCode": "        ;; Validate forward_ton_amount to prevent excessive values\n        throw_unless(401, forward_ton_amount <= 100000000); ;; Max 0.1 TON\n        \n        cell msg = begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(USDT_WALLET_ADDRESS)\n            .store_coins(JETTON_TRANSFER_GAS) ;; Use only constant, not user input\n            .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)\n            .store_ref(msg_body)\n            .end_cell();",
+              "startLine": 30,
+              "endLine": 36,
+              "changeDescription": "Removed user-controlled forward_ton_amount from message value calculation. Added validation to limit forward_ton_amount to a safe maximum. The forward_ton_amount is now only used in the payload (msg_body), not in the message value itself. This prevents attackers from controlling the TON amount sent with the message.",
+              "function": "recv_internal"
+            }
+          },
+          {
+            "id": "CRIT-002",
+            "severity": "CRITICAL",
+            "category": "User Input Misuse",
+            "title": "User-Controlled Amount in Jetton Transfer Payload",
+            "description": "Line 22 uses user-controlled 'amount' value directly in .store_coins() within the jetton transfer message body. An attacker can specify arbitrary jetton amounts to transfer, potentially draining jetton balances.",
+            "impact": "Attackers can specify arbitrary jetton amounts to withdraw, potentially draining all jettons from the contract. This represents a complete loss of jetton funds.",
+            "recommendation": "Add validation to ensure the amount doesn't exceed available balance or implement a maximum withdrawal limit. Consider adding access control to restrict who can initiate withdrawals.",
+            "codeChanges": {
+              "vulnerableCode": "        var msg_body = begin_cell()\n            .store_op_and_query_id(op::transfer, query_id)\n            .store_coins(amount)\n            .store_slice(to_address)",
+              "fixedCode": "        ;; Validate amount to prevent excessive withdrawals\n        throw_unless(402, amount > 0);\n        throw_unless(403, amount <= 1000000000000); ;; Max 1000 jettons (assuming 9 decimals)\n        \n        var msg_body = begin_cell()\n            .store_op_and_query_id(op::transfer, query_id)\n            .store_coins(amount)\n            .store_slice(to_address)",
+              "startLine": 20,
+              "endLine": 23,
+              "changeDescription": "Added validation checks to ensure amount is positive and doesn't exceed a reasonable maximum. While the amount is still user-provided (as required for withdrawal functionality), the validation prevents extreme values that could drain the contract. Additional access control should be implemented separately.",
+              "function": "recv_internal"
+            }
+          },
+          {
+            "id": "CRIT-003",
+            "severity": "CRITICAL",
+            "category": "User Input Misuse",
+            "title": "User-Controlled Forward TON Amount in Payload",
+            "description": "Line 26 uses user-controlled 'forward_ton_amount' directly in .store_coins() within the jetton transfer payload. While this is in the payload (not message value), it still allows users to specify arbitrary forward amounts that could affect the receiving contract's behavior.",
+            "impact": "Users can specify arbitrary forward_ton_amount values in the jetton transfer notification. This could be exploited to manipulate receiving contract logic that depends on forward amounts, or to cause unexpected behavior in jetton wallets.",
+            "recommendation": "Validate forward_ton_amount to ensure it's within acceptable bounds. Consider using a fixed or calculated value instead of allowing arbitrary user input.",
+            "codeChanges": {
+              "vulnerableCode": "            .store_uint(0, 1)\n            .store_coins(forward_ton_amount)\n            .store_maybe_ref(forward_payload)",
+              "fixedCode": "            .store_uint(0, 1)\n            .store_coins(forward_ton_amount) ;; Already validated above\n            .store_maybe_ref(forward_payload)",
+              "startLine": 25,
+              "endLine": 27,
+              "changeDescription": "The forward_ton_amount validation added in CRIT-001 fix also protects this usage. The value is now validated to be <= 0.1 TON before being used anywhere in the code.",
+              "function": "recv_internal"
+            }
+          },
+          {
+            "id": "CRIT-004",
+            "severity": "CRITICAL",
+            "category": "Undefined Variable",
+            "title": "Undefined Variable 'ref' in Message Construction",
+            "description": "Line 35 references an undefined variable 'ref' in .store_ref(ref). This variable is never declared or assigned in the code. The correct variable should be 'msg_body' which was constructed earlier. This would cause a compilation error.",
+            "impact": "The contract will not compile due to the undefined variable reference. This is a critical bug that prevents deployment. If somehow deployed, it would cause runtime errors.",
+            "recommendation": "Replace 'ref' with 'msg_body' to reference the correctly constructed message body.",
+            "codeChanges": {
+              "vulnerableCode": "            .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)\n            .store_ref(ref)\n            .end_cell();",
+              "fixedCode": "            .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)\n            .store_ref(msg_body)\n            .end_cell();",
+              "startLine": 34,
+              "endLine": 36,
+              "changeDescription": "Replaced undefined variable 'ref' with the correct variable 'msg_body' that was constructed earlier in the function. This fixes the compilation error and ensures the message body is properly attached to the message.",
+              "function": "recv_internal"
+            }
+          },
+          {
+            "id": "HIGH-001",
+            "severity": "HIGH",
+            "category": "Access Control",
+            "title": "Missing Access Control on Withdraw Operation",
+            "description": "The withdraw operation (op == op::withdraw) lacks any access control checks. Any external address can call this function and initiate withdrawals to arbitrary addresses. There's no verification of sender_address against an owner or authorized list.",
+            "impact": "Any user can trigger withdrawal operations, potentially draining funds if combined with other vulnerabilities. This completely bypasses any intended authorization mechanism.",
+            "recommendation": "Implement access control by checking the sender_address against an authorized owner or admin address stored in contract storage. Only allow authorized addresses to perform withdrawals.",
+            "codeChanges": {
+              "vulnerableCode": "    if (op == op::withdraw) {\n        int amount = in_msg_body~load_coins();",
+              "fixedCode": "    if (op == op::withdraw) {\n        ;; Load owner address from storage for access control\n        slice ds = get_data().begin_parse();\n        slice owner_address = ds~load_msg_addr();\n        \n        ;; Verify sender is authorized\n        throw_unless(404, equal_slices(sender_address, owner_address));\n        \n        int amount = in_msg_body~load_coins();",
+              "startLine": 14,
+              "endLine": 15,
+              "changeDescription": "Added access control check to verify that the sender is the contract owner before allowing withdrawal operations. The owner address should be stored in contract data during initialization. This prevents unauthorized users from triggering withdrawals.",
+              "function": "recv_internal"
+            }
+          },
+          {
+            "id": "LOW-001",
+            "severity": "LOW",
+            "category": "Code Quality",
+            "title": "Missing Constants Definition",
+            "description": "The code references undefined constants: USDT_WALLET_ADDRESS, JETTON_TRANSFER_GAS, op::withdraw, and op::transfer. These should be defined in the imports or at the top of the contract. While this may be intentional (defined in imports/stdlib.fc), it's not verifiable from the provided code.",
+            "impact": "If these constants are not properly defined in imports, the contract will fail to compile. This reduces code clarity and makes the contract harder to audit.",
+            "recommendation": "Ensure all constants are properly defined in imports/stdlib.fc or define them explicitly in the contract. Add comments indicating where these constants are defined for better code documentation.",
+            "codeChanges": {
+              "vulnerableCode": "#include \"imports/stdlib.fc\"\n\n() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {",
+              "fixedCode": "#include \"imports/stdlib.fc\"\n\n;; Constants should be defined in imports/stdlib.fc:\n;; const slice USDT_WALLET_ADDRESS\n;; const int JETTON_TRANSFER_GAS\n;; const int op::withdraw\n;; const int op::transfer\n\n() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {",
+              "startLine": 1,
+              "endLine": 3,
+              "changeDescription": "Added documentation comments indicating which constants should be defined in the imports file. This improves code clarity and makes it easier for auditors to verify that all dependencies are properly defined.",
+              "function": "N/A"
+            }
+          }
+        ],
+        "completeCodeComparison": {
+          "hasChanges": true,
+          "original": "#include \"imports/stdlib.fc\"\n\n() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    ;; ignore all bounced messages\n    if (is_bounced?(flags)) {\n        return ();\n    }\n    slice sender_address = cs~load_msg_addr();\n\n    (int op, int query_id) = in_msg_body~load_op_and_query_id();\n\n    if (op == op::withdraw) {\n        int amount = in_msg_body~load_coins();\n        slice to_address = in_msg_body~load_msg_addr();\n        int forward_ton_amount = in_msg_body~load_coins();\n        cell forward_payload = begin_cell().store_slice(in_msg_body).end_cell();\n\n        var msg_body = begin_cell()\n            .store_op_and_query_id(op::transfer, query_id)\n            .store_coins(amount)\n            .store_slice(to_address)\n            .store_slice(to_address)\n            .store_uint(0, 1)\n            .store_coins(forward_ton_amount)\n            .store_maybe_ref(forward_payload)\n            .end_cell();\n\n        cell msg = begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(USDT_WALLET_ADDRESS)\n            .store_coins(JETTON_TRANSFER_GAS + forward_ton_amount)\n            .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)\n            .store_ref(ref)\n            .end_cell();\n\n        send_raw_message(msg, 0);\n\n        return ();\n    }\n}",
+          "corrected": "#include \"imports/stdlib.fc\"\n\n;; Constants should be defined in imports/stdlib.fc:\n;; const slice USDT_WALLET_ADDRESS\n;; const int JETTON_TRANSFER_GAS\n;; const int op::withdraw\n;; const int op::transfer\n\n() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    ;; ignore all bounced messages\n    if (is_bounced?(flags)) {\n        return ();\n    }\n    slice sender_address = cs~load_msg_addr();\n\n    (int op, int query_id) = in_msg_body~load_op_and_query_id();\n\n    if (op == op::withdraw) {\n        ;; Load owner address from storage for access control\n        slice ds = get_data().begin_parse();\n        slice owner_address = ds~load_msg_addr();\n        \n        ;; Verify sender is authorized\n        throw_unless(404, equal_slices(sender_address, owner_address));\n        \n        int amount = in_msg_body~load_coins();\n        slice to_address = in_msg_body~load_msg_addr();\n        int forward_ton_amount = in_msg_body~load_coins();\n        cell forward_payload = begin_cell().store_slice(in_msg_body).end_cell();\n\n        ;; Validate amount to prevent excessive withdrawals\n        throw_unless(402, amount > 0);\n        throw_unless(403, amount <= 1000000000000); ;; Max 1000 jettons (assuming 9 decimals)\n        \n        ;; Validate forward_ton_amount to prevent excessive values\n        throw_unless(401, forward_ton_amount <= 100000000); ;; Max 0.1 TON\n\n        var msg_body = begin_cell()\n            .store_op_and_query_id(op::transfer, query_id)\n            .store_coins(amount)\n            .store_slice(to_address)\n            .store_slice(to_address)\n            .store_uint(0, 1)\n            .store_coins(forward_ton_amount) ;; Already validated above\n            .store_maybe_ref(forward_payload)\n            .end_cell();\n\n        cell msg = begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(USDT_WALLET_ADDRESS)\n            .store_coins(JETTON_TRANSFER_GAS) ;; Use only constant, not user input\n            .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)\n            .store_ref(msg_body)\n            .end_cell();\n\n        send_raw_message(msg, 0);\n\n        return ();\n    }\n}",
+          "changesExplanation": "Applied all critical and high severity fixes: (1) Removed user-controlled forward_ton_amount from message value calculation, using only JETTON_TRANSFER_GAS constant. (2) Added validation for amount and forward_ton_amount to prevent excessive values. (3) Fixed undefined variable 'ref' to 'msg_body'. (4) Added access control check to verify sender is contract owner before allowing withdrawals. (5) Added documentation comments for constants. These changes eliminate all critical fund loss vulnerabilities and prevent unauthorized access."
+        },
+        "recommendations": [
+          {
+            "priority": "High",
+            "title": "Implement Proper Storage Management",
+            "description": "The contract needs proper storage initialization and management to store the owner address. Implement get_data() and set_data() operations to persist the owner address.",
+            "rationale": "The access control fix requires reading the owner address from storage. Without proper storage management, the contract cannot enforce authorization."
+          },
+          {
+            "priority": "High",
+            "title": "Add Balance Checks",
+            "description": "Before processing withdrawals, verify that the contract has sufficient jetton balance to fulfill the withdrawal request. Query the jetton wallet balance and compare against the requested amount.",
+            "rationale": "Prevents withdrawal requests that exceed available balance, which would fail anyway but waste gas and provide poor user experience."
+          },
+          {
+            "priority": "High",
+            "title": "Implement Emergency Stop Mechanism",
+            "description": "Add a pause/unpause functionality that allows the owner to temporarily disable withdrawals in case of detected attacks or vulnerabilities.",
+            "rationale": "Provides a safety mechanism to protect funds if vulnerabilities are discovered after deployment."
+          },
+          {
+            "priority": "Medium",
+            "title": "Add Event Logging",
+            "description": "Emit events for withdrawal operations to enable off-chain monitoring and auditing of contract activity.",
+            "rationale": "Improves transparency and enables detection of suspicious activity patterns."
+          },
+          {
+            "priority": "Medium",
+            "title": "Implement Rate Limiting",
+            "description": "Add rate limiting to prevent rapid successive withdrawals that could drain the contract quickly if access control is compromised.",
+            "rationale": "Provides defense in depth by limiting the speed at which funds can be extracted even if other security measures fail."
+          }
+        ],
+        "gasOptimizations": [
+          {
+            "location": "Lines 4-9",
+            "description": "The bounce check could be optimized by using bitwise operations instead of function call. Replace 'is_bounced?(flags)' with '(flags & 1)' for direct bit checking.",
+            "estimatedGasSavings": "~50 gas units per message"
+          },
+          {
+            "location": "Lines 20-28",
+            "description": "The msg_body construction could be optimized by pre-calculating the builder size and using store_builder instead of multiple store operations where applicable.",
+            "estimatedGasSavings": "~100-200 gas units per withdrawal"
+          }
+        ],
+        "codeQualityObservations": [
+          {
+            "description": "The contract lacks comprehensive error handling. Consider adding more specific error codes for different failure scenarios (invalid amount, insufficient balance, etc.)."
+          },
+          {
+            "description": "Missing documentation comments. Add NatSpec-style comments to describe function parameters, return values, and expected behavior."
+          },
+          {
+            "description": "The contract doesn't handle the case where op is not op::withdraw. Consider adding an else clause or default handler for unknown operations."
+          },
+          {
+            "description": "Constants like JETTON_TRANSFER_GAS should be documented with their expected values and units (e.g., '0.05 TON for jetton transfer gas')."
+          }
+        ],
+        "positiveFindings": [
+          {
+            "aspect": "Bounce Handling",
+            "description": "The contract properly checks for and ignores bounced messages at the beginning of recv_internal, preventing bounce loops."
+          },
+          {
+            "aspect": "Message Parsing",
+            "description": "The contract correctly parses the incoming message structure, extracting flags and sender address in the proper order."
+          },
+          {
+            "aspect": "Impure Declaration",
+            "description": "The recv_internal function is correctly marked as 'impure', which is necessary for functions that modify state or send messages."
+          }
+        ],
+        "nextSteps": "IMMEDIATE ACTION REQUIRED: Do not deploy this contract in its current state. Apply all critical fixes, particularly: (1) Remove user-controlled values from message value calculations, (2) Implement access control for withdrawals, (3) Fix the undefined 'ref' variable, (4) Add input validation for all user-provided amounts. After applying fixes, conduct thorough testing including: withdrawal attempts with various amounts, unauthorized access attempts, edge cases with maximum values, and gas consumption analysis. Consider a professional security audit before mainnet deployment given the severity of the original vulnerabilities.",
+        "proposedCodeComplete": "#include \"imports/stdlib.fc\"\n\n;; Constants should be defined in imports/stdlib.fc:\n;; const slice USDT_WALLET_ADDRESS\n;; const int JETTON_TRANSFER_GAS\n;; const int op::withdraw\n;; const int op::transfer\n\n() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    ;; ignore all bounced messages\n    if (is_bounced?(flags)) {\n        return ();\n    }\n    slice sender_address = cs~load_msg_addr();\n\n    (int op, int query_id) = in_msg_body~load_op_and_query_id();\n\n    if (op == op::withdraw) {\n        ;; Load owner address from storage for access control\n        slice ds = get_data().begin_parse();\n        slice owner_address = ds~load_msg_addr();\n        \n        ;; Verify sender is authorized\n        throw_unless(404, equal_slices(sender_address, owner_address));\n        \n        int amount = in_msg_body~load_coins();\n        slice to_address = in_msg_body~load_msg_addr();\n        int forward_ton_amount = in_msg_body~load_coins();\n        cell forward_payload = begin_cell().store_slice(in_msg_body).end_cell();\n\n        ;; Validate amount to prevent excessive withdrawals\n        throw_unless(402, amount > 0);\n        throw_unless(403, amount <= 1000000000000); ;; Max 1000 jettons (assuming 9 decimals)\n        \n        ;; Validate forward_ton_amount to prevent excessive values\n        throw_unless(401, forward_ton_amount <= 100000000); ;; Max 0.1 TON\n\n        var msg_body = begin_cell()\n            .store_op_and_query_id(op::transfer, query_id)\n            .store_coins(amount)\n            .store_slice(to_address)\n            .store_slice(to_address)\n            .store_uint(0, 1)\n            .store_coins(forward_ton_amount) ;; Already validated above\n            .store_maybe_ref(forward_payload)\n            .end_cell();\n\n        cell msg = begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(USDT_WALLET_ADDRESS)\n            .store_coins(JETTON_TRANSFER_GAS) ;; Use only constant, not user input\n            .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)\n            .store_ref(msg_body)\n            .end_cell();\n\n        send_raw_message(msg, 0);\n\n        return ();\n    }\n}"
+      }
+    }
+  ]
+}

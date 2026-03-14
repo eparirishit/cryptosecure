@@ -1,0 +1,105 @@
+{
+  "capturedAt": "2026-03-14T18:55:39.475Z",
+  "provider": "unknown",
+  "contractFile": "VulnerableWallet.fc",
+  "response": {
+    "hackerResilienceScore": 10,
+    "attackSurface": [
+      {
+        "id": "AS1",
+        "entryPoint": "recv_internal",
+        "riskFactors": [
+          "external call",
+          "affects balance",
+          "missing access control"
+        ],
+        "notes": "Function recv_internal may be an attack surface",
+        "lineNumber": 8
+      },
+      {
+        "id": "AS2",
+        "entryPoint": "recv_external",
+        "riskFactors": [
+          "affects balance",
+          "missing access control"
+        ],
+        "notes": "Function recv_external may be an attack surface",
+        "lineNumber": 35
+      }
+    ],
+    "exploits": [
+      {
+        "id": "FB-EXP1",
+        "attackSurfaceId": "AS1",
+        "title": "Reentrancy via External Call Before State Update",
+        "type": "reentrancy",
+        "prerequisites": "Attacker can call the withdraw/transfer function",
+        "steps": [
+          "Attacker calls the function that sends a message",
+          "External message is dispatched before balance is updated",
+          "Attacker re-enters the contract while old balance is still stored",
+          "Attacker drains funds by repeating the withdrawal"
+        ],
+        "expectedImpact": "Complete drain of contract funds",
+        "likelihood": "high",
+        "status": "plausible",
+        "severity": "Critical",
+        "tonSpecificNotes": "In TON the actor model means reentrancy happens via chained messages, not recursive calls — the state update must happen before any send_raw_message."
+      },
+      {
+        "id": "FB-EXP2",
+        "attackSurfaceId": "AS1",
+        "title": "Unauthorized Access via Unprotected recv_external",
+        "type": "access-control",
+        "prerequisites": "Attacker can send an external message to the contract",
+        "steps": [
+          "Attacker crafts an external message with any desired op-code",
+          "recv_external calls accept_message() with no sender verification",
+          "Attacker executes privileged operations (balance reset, ownership change)"
+        ],
+        "expectedImpact": "Arbitrary state manipulation — attacker can set balance to any value or take ownership",
+        "likelihood": "high",
+        "status": "plausible",
+        "severity": "Critical",
+        "tonSpecificNotes": "recv_external accepts messages from any off-chain source; without a signature or owner check any actor can trigger admin functions."
+      },
+      {
+        "id": "FB-EXP3",
+        "attackSurfaceId": "AS1",
+        "title": "Unchecked Withdrawal — No Balance Validation",
+        "type": "other",
+        "prerequisites": "Attacker can call withdraw with an amount larger than the stored balance",
+        "steps": [
+          "Attacker calls withdraw with amount > current balance",
+          "Contract sends the requested amount without checking sufficiency",
+          "Contract balance underflows or TON runtime covers with borrowed gas"
+        ],
+        "expectedImpact": "Contract over-spends, leading to unexpected balance state or runtime error",
+        "likelihood": "medium",
+        "status": "plausible",
+        "severity": "High"
+      }
+    ],
+    "summary": "Hacker Mode analysis identified 2 attack surface(s). 3 plausible exploits found, 0 theoretical exploits identified. Hacker Resilience Score: 10/100.",
+    "recommendations": [
+      {
+        "exploitId": "FB-EXP1",
+        "mitigation": "Add reentrancy guards and ensure state changes happen before external calls. Use message mode 64 for bounce protection.",
+        "codeExample": "throw_unless(401, equal_slices(sender_address, owner_address));\n// Update state before external call\nbalance -= amount;\nsend_raw_message(msg, 64);",
+        "tonSpecific": true
+      },
+      {
+        "exploitId": "FB-EXP2",
+        "mitigation": "Add proper access control checks using throw_unless and equal_slices to verify sender identity.",
+        "codeExample": "throw_unless(401, equal_slices(sender_address, owner_address));",
+        "tonSpecific": true
+      },
+      {
+        "exploitId": "FB-EXP3",
+        "mitigation": "Review the exploit steps and add appropriate validation checks and access controls.",
+        "tonSpecific": false
+      }
+    ],
+    "riskLevel": "Critical"
+  }
+}

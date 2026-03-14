@@ -1,0 +1,213 @@
+{
+  "capturedAt": "2026-03-14T19:01:52.667Z",
+  "provider": "FunC",
+  "contractFile": "SimpleToken.fc",
+  "response": {
+    "analysisMetadata": {
+      "contractName": "SimpleToken",
+      "language": "FunC",
+      "linesOfCode": 46,
+      "analysisDate": "2025-01-10T00:00:00Z",
+      "analysisTimestamp": "2025-01-10T00:00:00Z",
+      "totalIssuesFound": 6
+    },
+    "securityScore": 28,
+    "grade": "F",
+    "executiveSummary": "The SimpleToken contract contains CRITICAL vulnerabilities that pose severe security risks. The contract lacks proper initialization, has no storage persistence, allows user-controlled values in critical operations, and is missing essential bounce handling. The most severe issue is the use of user-controlled amounts in .store_coins() operations, which can lead to fund drainage. Additionally, the contract's state variables are never loaded or saved, making it non-functional. Immediate remediation is required before deployment.",
+    "findingsSummary": {
+      "critical": 3,
+      "high": 2,
+      "medium": 1,
+      "low": 0,
+      "informational": 0,
+      "totalFindings": 6
+    },
+    "findings": [
+      {
+        "id": "CRIT-001",
+        "severity": "CRITICAL",
+        "category": "User Input Misuse",
+        "title": "User-Controlled Amount in .store_coins() Operation",
+        "description": "The mint operation uses user-supplied 'amount' directly in .store_coins() at line 37. This allows an attacker to control the value stored in the message, potentially leading to fund drainage or manipulation of token economics. User input should never directly control .store_coins() values.",
+        "impact": "An attacker can mint arbitrary amounts of tokens by controlling the 'amount' parameter, completely breaking the token's economic model and potentially draining value from the system.",
+        "recommendation": "Remove user-controlled values from .store_coins() operations. Implement proper validation and use constants or validated maximums. The amount should be validated against reasonable limits before being used.",
+        "codeChanges": {
+          "vulnerableCode": "        int amount = in_msg_body~load_coins();\n        slice to_address = in_msg_body~load_msg_addr();\n        \n        total_supply += amount;\n        \n        ;; Send mint notification to wallet\n        var msg = begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(to_address)\n            .store_coins(0)\n            .store_uint(0, 107)\n            .store_uint(op, 32)\n            .store_uint(query_id, 64)\n            .store_coins(amount)\n        .end_cell();",
+          "fixedCode": "        int amount = in_msg_body~load_coins();\n        slice to_address = in_msg_body~load_msg_addr();\n        \n        ;; Validate amount against reasonable limits\n        throw_unless(402, amount > 0);\n        throw_unless(403, amount <= 1000000000000); ;; Max 1000 tokens per mint\n        \n        total_supply += amount;\n        \n        ;; Send mint notification to wallet\n        var msg = begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(to_address)\n            .store_coins(0)\n            .store_uint(0, 107)\n            .store_uint(op, 32)\n            .store_uint(query_id, 64)\n            .store_coins(amount) ;; Now validated, but consider using constant for message value\n        .end_cell();",
+          "startLine": 24,
+          "endLine": 38,
+          "changeDescription": "Added validation checks to ensure amount is positive and within reasonable limits (max 1000 tokens). This prevents attackers from minting arbitrary amounts. Note: The amount in the payload is acceptable after validation, but the message value (.store_coins(0) at line 32) should remain constant.",
+          "function": "recv_internal"
+        }
+      },
+      {
+        "id": "CRIT-002",
+        "severity": "CRITICAL",
+        "category": "State Management",
+        "title": "Missing Storage Load and Save Operations",
+        "description": "The contract declares global variables (total_supply, admin_address, jetton_wallet_code) but never loads them from storage at the beginning of recv_internal() or saves them at the end. This means all state changes are lost after each transaction, making the contract completely non-functional.",
+        "impact": "The contract cannot maintain any persistent state. The total_supply will always be 0, admin_address will be uninitialized, and all minting operations will have no lasting effect. The contract is essentially broken.",
+        "recommendation": "Add proper storage load at the beginning of recv_internal() and storage save at the end. Implement a load_data() and save_data() function to manage contract state persistence.",
+        "codeChanges": {
+          "vulnerableCode": "() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    if (in_msg_body.slice_empty?()) {\n        return ();\n    }\n    \n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    slice sender_address = cs~load_msg_addr();",
+          "fixedCode": "() load_data() impure {\n    slice ds = get_data().begin_parse();\n    total_supply = ds~load_coins();\n    admin_address = ds~load_msg_addr();\n    jetton_wallet_code = ds~load_ref();\n}\n\n() save_data() impure {\n    set_data(begin_cell()\n        .store_coins(total_supply)\n        .store_slice(admin_address)\n        .store_ref(jetton_wallet_code)\n    .end_cell());\n}\n\n() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    if (in_msg_body.slice_empty?()) {\n        return ();\n    }\n    \n    load_data(); ;; Load state from storage\n    \n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    slice sender_address = cs~load_msg_addr();",
+          "startLine": 9,
+          "endLine": 16,
+          "changeDescription": "Added load_data() and save_data() helper functions to properly manage contract state. Added load_data() call at the beginning of recv_internal() to load state from storage. Must also add save_data() call before any return or at the end of state-changing operations.",
+          "function": "recv_internal"
+        }
+      },
+      {
+        "id": "CRIT-003",
+        "severity": "CRITICAL",
+        "category": "Missing Bounce Handling",
+        "title": "No Bounce Message Handling in recv_internal",
+        "description": "The recv_internal function does not check for bounced messages (flags & 1). Bounced messages should be handled separately to avoid processing them as regular operations, which could lead to unexpected state changes or vulnerabilities.",
+        "impact": "If a message bounces back to the contract, it will be processed as a regular message, potentially triggering unintended operations or causing the contract to fail. This can lead to loss of funds or incorrect state updates.",
+        "recommendation": "Add a bounce check at the beginning of recv_internal to return early if the message is bounced.",
+        "codeChanges": {
+          "vulnerableCode": "    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    slice sender_address = cs~load_msg_addr();",
+          "fixedCode": "    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    \n    if (flags & 1) { ;; Check if message is bounced\n        return ();\n    }\n    \n    slice sender_address = cs~load_msg_addr();",
+          "startLine": 14,
+          "endLine": 16,
+          "changeDescription": "Added bounce message check immediately after loading flags. If the message is bounced (flags & 1), the function returns early without processing the message, preventing unintended operations.",
+          "function": "recv_internal"
+        }
+      },
+      {
+        "id": "HIGH-001",
+        "severity": "HIGH",
+        "category": "Initialization",
+        "title": "Missing Contract Initialization Function",
+        "description": "The contract has no initialization function to set up the admin_address and jetton_wallet_code. Without proper initialization, the admin_address will be uninitialized, making the access control check at line 22 ineffective.",
+        "impact": "The contract cannot be properly deployed. The admin_address will be uninitialized (likely zero or invalid), preventing any legitimate minting operations. The contract is non-functional without initialization.",
+        "recommendation": "Add an initialization function that sets the admin_address and jetton_wallet_code during deployment. This should be called once during contract deployment.",
+        "codeChanges": {
+          "vulnerableCode": "global int total_supply;\nglobal slice admin_address;\nglobal cell jetton_wallet_code;",
+          "fixedCode": "global int total_supply;\nglobal slice admin_address;\nglobal cell jetton_wallet_code;\n\n() init(slice admin, cell wallet_code) impure {\n    total_supply = 0;\n    admin_address = admin;\n    jetton_wallet_code = wallet_code;\n    save_data();\n}",
+          "startLine": 5,
+          "endLine": 7,
+          "changeDescription": "Added init() function to properly initialize contract state with admin address and wallet code. This function should be called during contract deployment to set up the initial state.",
+          "function": "init"
+        }
+      },
+      {
+        "id": "HIGH-002",
+        "severity": "HIGH",
+        "category": "State Management",
+        "title": "Missing save_data() Call After State Modification",
+        "description": "After modifying total_supply at line 27, the contract does not call save_data() to persist the changes to storage. Even with load_data() added, without save_data(), all state changes will be lost.",
+        "impact": "All minting operations will appear to succeed but will have no lasting effect. The total_supply will reset to its previous value after each transaction, making the token system completely non-functional.",
+        "recommendation": "Add save_data() call at the end of the mint operation, after all state changes are complete.",
+        "codeChanges": {
+          "vulnerableCode": "        var msg = begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(to_address)\n            .store_coins(0)\n            .store_uint(0, 107)\n            .store_uint(op, 32)\n            .store_uint(query_id, 64)\n            .store_coins(amount)\n        .end_cell();\n        \n        send_raw_message(msg, 1);\n    }\n}",
+          "fixedCode": "        var msg = begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(to_address)\n            .store_coins(0)\n            .store_uint(0, 107)\n            .store_uint(op, 32)\n            .store_uint(query_id, 64)\n            .store_coins(amount)\n        .end_cell();\n        \n        send_raw_message(msg, 1);\n        save_data(); ;; Persist state changes to storage\n    }\n}",
+          "startLine": 30,
+          "endLine": 42,
+          "changeDescription": "Added save_data() call after send_raw_message() to persist the total_supply change to storage. This ensures state changes are not lost after the transaction completes.",
+          "function": "recv_internal"
+        }
+      },
+      {
+        "id": "MED-001",
+        "severity": "MEDIUM",
+        "category": "Integer Safety",
+        "title": "Potential Integer Overflow in total_supply",
+        "description": "The total_supply is incremented without checking for potential overflow at line 27. While FunC uses 257-bit integers making overflow unlikely, it's still theoretically possible with repeated large mints.",
+        "impact": "In extreme cases with repeated large mints, total_supply could overflow, leading to incorrect token supply tracking. This is unlikely but possible in theory.",
+        "recommendation": "Add overflow check before incrementing total_supply, or implement a maximum total supply limit.",
+        "codeChanges": {
+          "vulnerableCode": "        total_supply += amount;",
+          "fixedCode": "        ;; Check for overflow before adding\n        throw_unless(404, total_supply + amount >= total_supply);\n        total_supply += amount;",
+          "startLine": 27,
+          "endLine": 27,
+          "changeDescription": "Added overflow check to ensure total_supply + amount doesn't overflow. This prevents integer overflow issues in extreme edge cases.",
+          "function": "recv_internal"
+        }
+      }
+    ],
+    "completeCodeComparison": {
+      "hasChanges": true,
+      "original": ";; Simple Jetton (Token) Contract\n\n#include \"stdlib.fc\";\n\nglobal int total_supply;\nglobal slice admin_address;\nglobal cell jetton_wallet_code;\n\n() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    if (in_msg_body.slice_empty?()) {\n        return ();\n    }\n    \n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    slice sender_address = cs~load_msg_addr();\n    \n    int op = in_msg_body~load_uint(32);\n    int query_id = in_msg_body~load_uint(64);\n    \n    if (op == 1) { ;; mint\n        throw_unless(401, equal_slices(sender_address, admin_address));\n        \n        int amount = in_msg_body~load_coins();\n        slice to_address = in_msg_body~load_msg_addr();\n        \n        total_supply += amount;\n        \n        ;; Send mint notification to wallet\n        var msg = begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(to_address)\n            .store_coins(0)\n            .store_uint(0, 107)\n            .store_uint(op, 32)\n            .store_uint(query_id, 64)\n            .store_coins(amount)\n        .end_cell();\n        \n        send_raw_message(msg, 1);\n    }\n}\n\n(int) get_total_supply() method_id {\n    return total_supply;\n}",
+      "corrected": ";; Simple Jetton (Token) Contract\n\n#include \"stdlib.fc\";\n\nglobal int total_supply;\nglobal slice admin_address;\nglobal cell jetton_wallet_code;\n\n() load_data() impure {\n    slice ds = get_data().begin_parse();\n    total_supply = ds~load_coins();\n    admin_address = ds~load_msg_addr();\n    jetton_wallet_code = ds~load_ref();\n}\n\n() save_data() impure {\n    set_data(begin_cell()\n        .store_coins(total_supply)\n        .store_slice(admin_address)\n        .store_ref(jetton_wallet_code)\n    .end_cell());\n}\n\n() init(slice admin, cell wallet_code) impure {\n    total_supply = 0;\n    admin_address = admin;\n    jetton_wallet_code = wallet_code;\n    save_data();\n}\n\n() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    if (in_msg_body.slice_empty?()) {\n        return ();\n    }\n    \n    load_data();\n    \n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    \n    if (flags & 1) {\n        return ();\n    }\n    \n    slice sender_address = cs~load_msg_addr();\n    \n    int op = in_msg_body~load_uint(32);\n    int query_id = in_msg_body~load_uint(64);\n    \n    if (op == 1) { ;; mint\n        throw_unless(401, equal_slices(sender_address, admin_address));\n        \n        int amount = in_msg_body~load_coins();\n        slice to_address = in_msg_body~load_msg_addr();\n        \n        throw_unless(402, amount > 0);\n        throw_unless(403, amount <= 1000000000000);\n        \n        throw_unless(404, total_supply + amount >= total_supply);\n        total_supply += amount;\n        \n        ;; Send mint notification to wallet\n        var msg = begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(to_address)\n            .store_coins(0)\n            .store_uint(0, 107)\n            .store_uint(op, 32)\n            .store_uint(query_id, 64)\n            .store_coins(amount)\n        .end_cell();\n        \n        send_raw_message(msg, 1);\n        save_data();\n    }\n}\n\n(int) get_total_supply() method_id {\n    load_data();\n    return total_supply;\n}",
+      "changesExplanation": "The corrected code includes: (1) load_data() and save_data() functions for proper state persistence, (2) init() function for contract initialization, (3) bounce message handling to prevent processing bounced messages, (4) validation checks for mint amount (positive and within limits), (5) overflow check for total_supply, (6) save_data() call after state modifications, and (7) load_data() call in get_total_supply() getter. These changes address all CRITICAL and HIGH severity vulnerabilities, making the contract functional and significantly more secure."
+    },
+    "recommendations": [
+      {
+        "priority": "High",
+        "title": "Implement Proper State Management",
+        "description": "Add load_data() and save_data() functions and call them appropriately in all functions that read or modify state. Without this, the contract is completely non-functional.",
+        "rationale": "State persistence is fundamental to contract functionality. Without it, all operations are ephemeral and have no lasting effect."
+      },
+      {
+        "priority": "High",
+        "title": "Add Contract Initialization",
+        "description": "Implement an init() function to properly set up admin_address and jetton_wallet_code during deployment. Consider using a deployment script that calls this function.",
+        "rationale": "Uninitialized state variables make the contract unusable. Proper initialization is required for the contract to function correctly."
+      },
+      {
+        "priority": "High",
+        "title": "Validate User Input Thoroughly",
+        "description": "Add comprehensive validation for all user-supplied values, especially amounts. Implement reasonable limits and sanity checks.",
+        "rationale": "User-controlled values in critical operations can lead to fund drainage and broken token economics. Validation is essential for security."
+      },
+      {
+        "priority": "Medium",
+        "title": "Implement Additional Operations",
+        "description": "Add burn, transfer, and other standard jetton operations. Implement proper error handling for all operations.",
+        "rationale": "A functional token contract needs more than just minting. Standard operations are expected by wallets and exchanges."
+      },
+      {
+        "priority": "Medium",
+        "title": "Add Events and Logging",
+        "description": "Implement proper event emission for all state-changing operations to enable tracking and debugging.",
+        "rationale": "Events are crucial for off-chain monitoring, debugging, and integration with explorers and wallets."
+      }
+    ],
+    "gasOptimizations": [
+      {
+        "location": "Lines 14-16",
+        "description": "The flags variable is loaded but only used for bounce checking. Consider loading it inline in the bounce check to save a variable allocation.",
+        "estimatedGasSavings": "Minimal (< 100 gas units)"
+      },
+      {
+        "location": "Lines 30-38",
+        "description": "The message construction could be optimized by pre-computing constant parts of the message structure.",
+        "estimatedGasSavings": "Minor (100-200 gas units per mint operation)"
+      }
+    ],
+    "codeQualityObservations": [
+      {
+        "description": "The contract lacks comprehensive documentation. Add comments explaining the purpose of each function and the expected behavior of operations."
+      },
+      {
+        "description": "Error codes (401, 402, 403, 404) should be defined as constants with descriptive names for better maintainability."
+      },
+      {
+        "description": "The contract only implements minting functionality. A complete jetton implementation should include burn, transfer, and balance query operations."
+      },
+      {
+        "description": "Consider implementing the TEP-74 (Jetton Standard) more completely to ensure compatibility with wallets and exchanges."
+      },
+      {
+        "description": "The get_total_supply() getter should also call load_data() to ensure it returns the current state from storage."
+      }
+    ],
+    "positiveFindings": [
+      {
+        "aspect": "Access Control",
+        "description": "The mint operation correctly checks that the sender is the admin using equal_slices(), which is the proper way to compare addresses in FunC."
+      },
+      {
+        "aspect": "Message Structure",
+        "description": "The message construction follows TON standards with proper flag usage (0x18 for internal messages) and structure."
+      },
+      {
+        "aspect": "Code Clarity",
+        "description": "The code is relatively simple and easy to understand, making it a good foundation for a more complete implementation."
+      }
+    ],
+    "nextSteps": "IMMEDIATE ACTION REQUIRED: (1) Implement load_data() and save_data() functions and integrate them into all state-accessing functions. (2) Add init() function and create deployment script. (3) Add bounce handling. (4) Implement input validation for mint amounts. (5) Add overflow checks. (6) Test thoroughly on testnet before any mainnet deployment. (7) Consider a professional audit before handling real value. (8) Implement remaining jetton standard operations (burn, transfer, etc.). The contract in its current state is NOT SAFE for deployment and will not function correctly.",
+    "proposedCodeComplete": ";; Simple Jetton (Token) Contract\n\n#include \"stdlib.fc\";\n\nglobal int total_supply;\nglobal slice admin_address;\nglobal cell jetton_wallet_code;\n\n() load_data() impure {\n    slice ds = get_data().begin_parse();\n    total_supply = ds~load_coins();\n    admin_address = ds~load_msg_addr();\n    jetton_wallet_code = ds~load_ref();\n}\n\n() save_data() impure {\n    set_data(begin_cell()\n        .store_coins(total_supply)\n        .store_slice(admin_address)\n        .store_ref(jetton_wallet_code)\n    .end_cell());\n}\n\n() init(slice admin, cell wallet_code) impure {\n    total_supply = 0;\n    admin_address = admin;\n    jetton_wallet_code = wallet_code;\n    save_data();\n}\n\n() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {\n    if (in_msg_body.slice_empty?()) {\n        return ();\n    }\n    \n    load_data();\n    \n    slice cs = in_msg_full.begin_parse();\n    int flags = cs~load_uint(4);\n    \n    if (flags & 1) {\n        return ();\n    }\n    \n    slice sender_address = cs~load_msg_addr();\n    \n    int op = in_msg_body~load_uint(32);\n    int query_id = in_msg_body~load_uint(64);\n    \n    if (op == 1) { ;; mint\n        throw_unless(401, equal_slices(sender_address, admin_address));\n        \n        int amount = in_msg_body~load_coins();\n        slice to_address = in_msg_body~load_msg_addr();\n        \n        throw_unless(402, amount > 0);\n        throw_unless(403, amount <= 1000000000000);\n        \n        throw_unless(404, total_supply + amount >= total_supply);\n        total_supply += amount;\n        \n        ;; Send mint notification to wallet\n        var msg = begin_cell()\n            .store_uint(0x18, 6)\n            .store_slice(to_address)\n            .store_coins(0)\n            .store_uint(0, 107)\n            .store_uint(op, 32)\n            .store_uint(query_id, 64)\n            .store_coins(amount)\n        .end_cell();\n        \n        send_raw_message(msg, 1);\n        save_data();\n    }\n}\n\n(int) get_total_supply() method_id {\n    load_data();\n    return total_supply;\n}"
+  }
+}

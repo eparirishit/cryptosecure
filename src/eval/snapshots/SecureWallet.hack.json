@@ -1,0 +1,92 @@
+{
+  "capturedAt": "2026-03-14T19:00:32.865Z",
+  "provider": "unknown",
+  "contractFile": "SecureWallet.fc",
+  "response": {
+    "hackerResilienceScore": 30,
+    "attackSurface": [
+      {
+        "id": "AS1",
+        "entryPoint": "recv_internal",
+        "riskFactors": [
+          "external call",
+          "affects balance"
+        ],
+        "notes": "Function recv_internal may be an attack surface",
+        "lineNumber": 8
+      },
+      {
+        "id": "AS2",
+        "entryPoint": "on_bounce",
+        "riskFactors": [
+          "affects balance",
+          "missing access control"
+        ],
+        "notes": "Function on_bounce may be an attack surface",
+        "lineNumber": 47
+      },
+      {
+        "id": "AS3",
+        "entryPoint": "recv_external",
+        "riskFactors": [
+          "potential entry point"
+        ],
+        "notes": "Function recv_external may be an attack surface",
+        "lineNumber": 56
+      }
+    ],
+    "exploits": [
+      {
+        "id": "FB-EXP1",
+        "attackSurfaceId": "AS1",
+        "title": "Reentrancy via External Call Before State Update",
+        "type": "reentrancy",
+        "prerequisites": "Attacker can call the withdraw/transfer function",
+        "steps": [
+          "Attacker calls the function that sends a message",
+          "External message is dispatched before balance is updated",
+          "Attacker re-enters the contract while old balance is still stored",
+          "Attacker drains funds by repeating the withdrawal"
+        ],
+        "expectedImpact": "Complete drain of contract funds",
+        "likelihood": "high",
+        "status": "plausible",
+        "severity": "Critical",
+        "tonSpecificNotes": "In TON the actor model means reentrancy happens via chained messages, not recursive calls — the state update must happen before any send_raw_message."
+      },
+      {
+        "id": "FB-EXP2",
+        "attackSurfaceId": "AS1",
+        "title": "Unauthorized Access via Unprotected recv_external",
+        "type": "access-control",
+        "prerequisites": "Attacker can send an external message to the contract",
+        "steps": [
+          "Attacker crafts an external message with any desired op-code",
+          "recv_external calls accept_message() with no sender verification",
+          "Attacker executes privileged operations (balance reset, ownership change)"
+        ],
+        "expectedImpact": "Arbitrary state manipulation — attacker can set balance to any value or take ownership",
+        "likelihood": "high",
+        "status": "plausible",
+        "severity": "Critical",
+        "tonSpecificNotes": "recv_external accepts messages from any off-chain source; without a signature or owner check any actor can trigger admin functions."
+      }
+    ],
+    "summary": "Hacker Mode analysis identified 3 attack surface(s). 2 plausible exploits found, 0 theoretical exploits identified. Hacker Resilience Score: 30/100.",
+    "recommendations": [
+      {
+        "exploitId": "FB-EXP1",
+        "mitigation": "Add reentrancy guards and ensure state changes happen before external calls. Use message mode 64 for bounce protection.",
+        "codeExample": "throw_unless(401, equal_slices(sender_address, owner_address));\n// Update state before external call\nbalance -= amount;\nsend_raw_message(msg, 64);",
+        "tonSpecific": true
+      },
+      {
+        "exploitId": "FB-EXP2",
+        "mitigation": "Add proper access control checks using throw_unless and equal_slices to verify sender identity.",
+        "codeExample": "throw_unless(401, equal_slices(sender_address, owner_address));",
+        "tonSpecific": true
+      }
+    ],
+    "riskLevel": "High"
+  }
+}

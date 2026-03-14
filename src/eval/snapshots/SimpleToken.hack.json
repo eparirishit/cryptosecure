@@ -1,0 +1,47 @@
+{
+  "capturedAt": "2026-03-14T19:04:49.873Z",
+  "provider": "unknown",
+  "contractFile": "SimpleToken.fc",
+  "response": {
+    "hackerResilienceScore": 80,
+    "attackSurface": [
+      {
+        "id": "AS1",
+        "entryPoint": "recv_internal",
+        "riskFactors": [
+          "external call",
+          "affects balance"
+        ],
+        "notes": "Function recv_internal may be an attack surface",
+        "lineNumber": 9
+      }
+    ],
+    "exploits": [
+      {
+        "id": "FB-EXP3",
+        "attackSurfaceId": "AS1",
+        "title": "Unchecked Withdrawal — No Balance Validation",
+        "type": "other",
+        "prerequisites": "Attacker can call withdraw with an amount larger than the stored balance",
+        "steps": [
+          "Attacker calls withdraw with amount > current balance",
+          "Contract sends the requested amount without checking sufficiency",
+          "Contract balance underflows or TON runtime covers with borrowed gas"
+        ],
+        "expectedImpact": "Contract over-spends, leading to unexpected balance state or runtime error",
+        "likelihood": "medium",
+        "status": "plausible",
+        "severity": "High"
+      }
+    ],
+    "summary": "Hacker Mode analysis identified 1 attack surface(s). 1 plausible exploit found, 0 theoretical exploits identified. Hacker Resilience Score: 80/100.",
+    "recommendations": [
+      {
+        "exploitId": "FB-EXP3",
+        "mitigation": "Review the exploit steps and add appropriate validation checks and access controls.",
+        "tonSpecific": false
+      }
+    ],
+    "riskLevel": "Low"
+  }
+}
