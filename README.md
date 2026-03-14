@@ -116,6 +116,16 @@ Line-by-line fixes suggested → Developer applies fixes → Re-analysis confirm
 
 ---
 
+## Testing
+
+| Command | Description |
+|---------|-------------|
+| `npm test` | Run the full test suite once |
+| `npm run test:watch` | Run tests in watch mode (re-runs on file changes) |
+| `npm run test:coverage` | Run tests with coverage report |
+
+---
+
 ## Technology Stack
 
 **Frontend:**
